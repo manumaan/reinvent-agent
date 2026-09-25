@@ -23,7 +23,7 @@ from typing import Any
 import httpx
 
 from reinvent_agent.events_api.auth import TokenProvider
-from reinvent_agent.events_api.models import BatchResult, Event, Schedule, Session
+from reinvent_agent.events_api.models import BulkResult, Event, Schedule, Session
 
 BASE_URL = "https://api.awsevents.com/v1"
 MAX_BATCH = 10  # AssociateFavorites and ReserveSessions take 1..10 distinct IDs
@@ -49,13 +49,6 @@ def _batches(ids: Iterable[str], size: int = MAX_BATCH) -> Iterator[list[str]]:
     unique = list(dict.fromkeys(ids))
     for i in range(0, len(unique), size):
         yield unique[i : i + size]
-
-
-def _items(body: dict, *keys: str) -> list[dict]:
-    for key in keys:
-        if isinstance(body.get(key), list):
-            return body[key]
-    raise EventsApiError(200, body, "?", f"no list under any of {keys}")
 
 
 def format_personal_time(dt: datetime) -> str:
@@ -157,11 +150,11 @@ class EventsApiClient:
     def list_events(self, *, include_past: bool = False) -> list[Event]:
         params = {"includePast": "true"} if include_past else None
         body = self._request("GET", "/events", auth=False, params=params)
-        return [Event.model_validate(e) for e in _items(body, "events", "items")]
+        return [Event.model_validate(e) for e in body["items"]]
 
     def get_event(self, event_id: str) -> Event:
         body = self._request("GET", f"/events/{event_id}", auth=False)
-        return Event.model_validate(body.get("event", body))
+        return Event.model_validate(body["event"])
 
     def iter_sessions(
         self, event_id: str, *, include_abstracts: bool = True, locale: str | None = None
@@ -175,7 +168,7 @@ class EventsApiClient:
             if next_token:
                 params["nextToken"] = next_token
             body = self._request("GET", f"/events/{event_id}/sessions", params=params)
-            for raw in _items(body, "sessions", "items"):
+            for raw in body["items"]:
                 yield Session.model_validate(raw)
             next_token = body.get("nextToken")
             if not next_token:
@@ -183,24 +176,25 @@ class EventsApiClient:
 
     def get_session(self, event_id: str, session_id: str) -> Session:
         body = self._request("GET", f"/events/{event_id}/sessions/{session_id}")
-        return Session.model_validate(body.get("session", body))
+        return Session.model_validate(body["session"])
 
     # --- my schedule ---------------------------------------------------------
 
     def get_schedule(self, event_id: str) -> Schedule:
         """Source of truth for your own data: read it back after every write."""
-        return Schedule.model_validate(self._request("GET", f"/events/{event_id}/schedule"))
+        body = self._request("GET", f"/events/{event_id}/schedule")
+        return Schedule.model_validate(body["schedule"])
 
-    def _batch_write(self, path: str, session_ids: Iterable[str]) -> BatchResult:
-        merged = BatchResult()
+    def _batch_write(self, path: str, session_ids: Iterable[str]) -> BulkResult:
+        merged = BulkResult()
         for batch in _batches(session_ids):
             body = self._request("POST", path, json={"sessionIds": batch})
-            part = BatchResult.model_validate(body or {})
-            merged.succeeded.extend(part.succeeded)
+            part = BulkResult.model_validate(body["result"])
+            merged.successful.extend(part.successful)
             merged.failed.extend(part.failed)
         return merged
 
-    def reserve_sessions(self, event_id: str, session_ids: Iterable[str]) -> BatchResult:
+    def reserve_sessions(self, event_id: str, session_ids: Iterable[str]) -> BulkResult:
         """Reserve in batches of 10, merging per-session results.
 
         Not idempotent: an already-reserved session comes back as a failure, so
@@ -213,7 +207,7 @@ class EventsApiClient:
     def cancel_reservation(self, event_id: str, session_id: str) -> bool:
         return self._delete_idempotent(f"/events/{event_id}/reservations/{session_id}")
 
-    def associate_favorites(self, event_id: str, session_ids: Iterable[str]) -> BatchResult:
+    def associate_favorites(self, event_id: str, session_ids: Iterable[str]) -> BulkResult:
         return self._batch_write(f"/events/{event_id}/favorites", session_ids)
 
     def disassociate_favorite(self, event_id: str, session_id: str) -> bool:

@@ -24,8 +24,10 @@ Sources: the developer guide pages for ListEvents, ListSessions, GetSession, Get
 | `ReserveSessions` | token | Auto-reserve. Opens through the API on **Oct 8, 2026** (Oct 6 in the web portal) |
 | `CreatePersonalTime` | token | Block lunch, travel and meetings |
 
-**Session fields:** `sessionId`, title, abstract, code, type, level, tracks, topics, industries, roles, services, start/end, **room and venue**, all-day flag, reservable flag, coarse fullness, and speakers.
-→ Venue metadata exists, so feature #3 is feasible.
+**Session fields** (exact, from `openapi.json`): `sessionId`, `title`, `abbreviation` (code), `abstract`, `type`, `level`, `venue`, `room`, `isAllDaySession`, `isReservable`, `seatAvailability` (`available|limited|veryLimited|unavailable|walkUp`), `sessionTime {date, time, length, timezone}`, `speakers[{name}]`, and the taxonomy lists `tracks`, `topics`, `industries`, `areasOfInterest`, `roles`, `services`, `segments`, `features`, `customerPersonas`, `experiences`, `additionalActivities`, `focusAreas`. Only `sessionId` and `title` are guaranteed.
+→ The schema has `venue`, so feature #3 is feasible. It needs a fallback that parses `room` for events that leave `venue` out.
+
+**Schedule:** `reserved` and `favorites` are session-ID lists, plus `personalTime[]`. **Bulk writes** return `{result: {successful[], failed[{sessionId, code, conflictsWith[]}]}}`. The codes are `sessionNotReservable`, `scheduleConflict`, `alreadyScheduled`, `sessionFull`, `insufficientAccess`, `timePassed`, `alreadyFavorited`, `notFavorited` and `other`.
 
 **MCP server** (`https://api.awsevents.com/mcp`, streamable HTTP): exposes the same 12 operations as tools. It requires sign-in on **every** call, including catalog reads, and the client does its own OAuth on a fixed localhost callback.
 

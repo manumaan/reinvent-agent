@@ -7,11 +7,13 @@ import pytest
 
 from reinvent_agent.events_api import EventsApiClient, FileTokenStore, TokenProvider, Tokens
 
-FIXTURES = Path(__file__).parent.parent / "fixtures" / "reinvent2026"
+FIXTURES = Path(__file__).parent.parent / "fixtures"
 
 
 def load(name: str) -> dict:
-    return json.loads((FIXTURES / name).read_text())
+    """Load a fixture by path relative to fixtures/; bare names come from reinvent2026/."""
+    path = FIXTURES / name if "/" in name else FIXTURES / "reinvent2026" / name
+    return json.loads(path.read_text())
 
 
 @pytest.fixture

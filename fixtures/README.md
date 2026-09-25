@@ -1,11 +1,15 @@
 # Fixtures
 
-**Synthetic.** The live API (`api.awsevents.com`) and its OpenAPI spec were not reachable from the development sandbox when these were written. They follow the shapes the developer guide describes. Treat field names as provisional.
+| Path | Source |
+|---|---|
+| `openapi.json` | Live OpenAPI description, `https://api.awsevents.com/v1/openapi.json` (v1.0.0, fetched 2026-09-25) |
+| `public/events.json` | Live `ListEvents?includePast=true`, trimmed to three events |
+| `public/cloudturkiye2026_sessions.json` | Live `ListSessions` for a public event (no sign-in needed), trimmed to 5 sessions |
+| `reinvent2026/*.json` | **Synthetic**, in the exact shapes from `openapi.json`. The re:Invent catalog requires a registered attendee's token. |
 
-Once you have access, replace them with sanitized recordings:
+To replace the synthetic catalog with a real one once signed in:
 
 ```bash
 reinvent-agent auth login
 reinvent-agent catalog dump --event reinvent2026 --out fixtures/reinvent2026/catalog.jsonl
-curl -s https://api.awsevents.com/v1/openapi.json -o fixtures/openapi.json
 ```

@@ -99,7 +99,7 @@ def catalog_dump(
     n = 0
     with out.open("w") as f:
         for s in _client().iter_sessions(event_id, include_abstracts=not no_abstracts):
-            f.write(json.dumps(s.model_dump(mode="json")) + "\n")
+            f.write(json.dumps(s.model_dump(mode="json", by_alias=True, exclude_none=True)) + "\n")
             n += 1
     typer.echo(f"Wrote {n} sessions to {out}")
 
@@ -108,7 +108,7 @@ def catalog_dump(
 def catalog_schedule(event_id: str = typer.Option(DEFAULT_EVENT, "--event")):
     """Show your reservations, favorites and personal time."""
     sched = _client().get_schedule(event_id)
-    typer.echo(json.dumps(sched.model_dump(mode="json"), indent=2))
+    typer.echo(json.dumps(sched.model_dump(mode="json", by_alias=True), indent=2))
 
 
 if __name__ == "__main__":

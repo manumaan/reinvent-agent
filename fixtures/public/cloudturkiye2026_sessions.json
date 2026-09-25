@@ -1,0 +1,231 @@
+{
+  "items": [
+    {
+      "abbreviation": "AIM216",
+      "abstract": "[Laptop required]\nBuild a team of AI agents, deploy them to the cloud, and watch them compete in live football matches. In this hands-on workshop, you write real agent code, deploy it to Amazon Bedrock AgentCore, and compete against AI opponents and other teams on a live 3D pitch. No AI or deep coding experience required. Through three phases—build, play, and optimize—you gain practical skills in multi-agent coordination, real-time reasoning, and production-grade deployment using Amazon Bedrock, Strands Agents SDK, and Kiro. Walk away with a working multi-agent system and patterns you can apply to any domain.",
+      "areasOfInterest": [
+        "Agentic AI"
+      ],
+      "features": [
+        "Hands-on",
+        "Laptop required"
+      ],
+      "roles": [
+        "Developer / Engineer",
+        "Solution / Systems Architect",
+        "DevOps Engineer"
+      ],
+      "room": "Floor -4, Game Day (AWS Agentic Football Camp), Room B4017",
+      "services": [
+        "Amazon Bedrock",
+        "Kiro"
+      ],
+      "sessionId": "AIM216",
+      "sessionTime": {
+        "date": "2026-09-23",
+        "length": "190",
+        "time": "13:50",
+        "timezone": "Europe/Istanbul"
+      },
+      "speakers": [
+        {
+          "name": "Zafer Sever, Senior Solutions Architect, AWS"
+        },
+        {
+          "name": "Eren Tunçer, Sr. Solutions Architect, AWS"
+        },
+        {
+          "name": "Sumeyye Erguven, Senior Solutions Architect, AWS"
+        }
+      ],
+      "title": "AWS Agentic Football Cup - [TR]",
+      "topics": [
+        "Artificial Intelligence"
+      ],
+      "type": "Workshop"
+    },
+    {
+      "abbreviation": "AIM217",
+      "abstract": "Building an AI agent takes weeks; running it reliably in production takes an entirely different approach. In this session, AWS introduces Amazon Bedrock AgentCore and its capabilities for deploying secure, scalable agents with any framework and model. Beko, a Fortune Global 500 appliances company, shares their journey from containerized agents on Amazon ECS with AWS Fargate to a purpose-built agent runtime on Amazon Bedrock AgentCore. Learn how their Production Planning Supplier Agent handles thousands of isolated sessions across six factories, processes 450+ monthly supplier emails, and enforces governance through Cedar policies, session isolation, and full observability, all without managing infrastructure.",
+      "areasOfInterest": [
+        "Agentic AI"
+      ],
+      "features": [
+        "Lecture-style"
+      ],
+      "roles": [
+        "Solution / Systems Architect",
+        "Developer / Engineer",
+        "IT Professional / Technical Manager"
+      ],
+      "room": "Floor -3, Breakout 2, 100% Studio",
+      "services": [
+        "Amazon Bedrock"
+      ],
+      "sessionId": "AIM217",
+      "sessionTime": {
+        "date": "2026-09-23",
+        "length": "30",
+        "time": "15:10",
+        "timezone": "Europe/Istanbul"
+      },
+      "speakers": [
+        {
+          "name": "Alper Öner, Head of Artificial Intelligence, Beko"
+        },
+        {
+          "name": "Zafer Sever, Senior Solutions Architect, AWS"
+        }
+      ],
+      "title": "How Beko runs production AI agents at scale with AgentCore - [TR]",
+      "topics": [
+        "Artificial Intelligence"
+      ],
+      "type": "Breakout session"
+    },
+    {
+      "abbreviation": "AIM218",
+      "abstract": "Most AI agent projects stall when moving from prototype to production. This session tackles the top challenges builders face when deploying agentic AI at scale. You'll learn how to answer the fundamental question of whether to build custom agents or leverage pre-built agents for DevOps, security, development, and business productivity use cases. Then you'll discover how to address the critical production challenges of reliability, observability, cost management, security, and evaluation. Drawing from real customer deployments and AWS's portfolio of agentic AI capabilities, you'll gain actionable approaches for building agents that don't just demo well but ship and scale.",
+      "areasOfInterest": [
+        "Agentic AI"
+      ],
+      "features": [
+        "Lecture-style"
+      ],
+      "roles": [
+        "IT Executive",
+        "IT Professional / Technical Manager",
+        "Solution / Systems Architect"
+      ],
+      "room": "Floor -3, Breakout 1, Turkcell Stage",
+      "services": [
+        "Amazon Bedrock",
+        "Amazon Quick",
+        "Kiro"
+      ],
+      "sessionId": "AIM218",
+      "sessionTime": {
+        "date": "2026-09-23",
+        "length": "30",
+        "time": "11:30",
+        "timezone": "Europe/Istanbul"
+      },
+      "speakers": [
+        {
+          "name": "Orkun Torun, Solutions Architect, AWS"
+        },
+        {
+          "name": "Kivanc Uslu, Senior Manager, Solutions Architecture, AWS"
+        }
+      ],
+      "title": "From Demo to Deployment: \u000bSolving Agentic AI's Toughest Challenges - [TR]",
+      "topics": [
+        "Artificial Intelligence"
+      ],
+      "type": "Breakout session"
+    },
+    {
+      "abbreviation": "AIM225",
+      "abstract": "Most generative AI sessions feel like a 30-minute ad disguised as a talk. We changed that format. AI Spotlight: 8 companies, 10 minutes each, one framework; challenge, solution, result, metric. Hear from bitaksi, Etstur, Etiya, Insider One, Mavi, MDT, Migros One, and OPLOG. No fluff. No \"we're exploring AI.\" Just what they built, what it solved, and what it measured. And here's the twist: the session itself runs on AI. Amazon Bedrock co-moderates live, generates real-time follow-up questions, and produces takeaway summaries as each story ends.",
+      "areasOfInterest": [
+        "Agentic AI"
+      ],
+      "features": [
+        "Lecture-style"
+      ],
+      "roles": [
+        "Business Executive",
+        "Solution / Systems Architect",
+        "IT Executive"
+      ],
+      "room": "Floor -3, Breakout 1, Turkcell Stage",
+      "services": [
+        "Amazon Bedrock"
+      ],
+      "sessionId": "AIM225",
+      "sessionTime": {
+        "date": "2026-09-23",
+        "length": "65",
+        "time": "13:50",
+        "timezone": "Europe/Istanbul"
+      },
+      "speakers": [
+        {
+          "name": "Engin Tanrıkulu, CTO, bitaksi"
+        },
+        {
+          "name": "Harun Kofuoglu, AI Director, Etiya"
+        },
+        {
+          "name": "Alper Derya, Software Development Manager, Etstur"
+        },
+        {
+          "name": "Derda Karakış, Insider One"
+        },
+        {
+          "name": "Bedir Siyar Lacin, Sr ISV Account Manager, AWS"
+        },
+        {
+          "name": "Ceren Cinar, Account Executive, AWS"
+        },
+        {
+          "name": "Mustafa Turedi, Data & AI Director, Mavi Giyim"
+        },
+        {
+          "name": "Prof. Dr. Mutlu Demiray, CEO, MDT"
+        },
+        {
+          "name": "Sevda Durdu, Lead DevOps Engineer, Migros One"
+        },
+        {
+          "name": "Halit Develioglu, Founder and CEO, OPLOG"
+        }
+      ],
+      "title": "Generative AI Customer Spotlight: How They Achieved It - [TR]",
+      "topics": [
+        "Artificial Intelligence"
+      ],
+      "type": "Breakout session"
+    },
+    {
+      "abbreviation": "AIM301",
+      "abstract": "In this session, learn how Migros One built SmartOne, an enterprise AI data agent using a Deep Agents architecture with the LangGraph SDK on Amazon Bedrock AgentCore. We'll walk through how SmartOne connects enterprise data, business definitions, and domain knowledge through a single conversational interface, and how the team achieved enterprise-wide adoption across all business units. We'll also explore MAYA, a conversational shopping assistant built natively on AgentCore with personalized memory capabilities. Discover how Amazon Bedrock AgentCore enables managed scalability, runtime traceability, and production-grade governance for enterprise agentic AI at scale.",
+      "areasOfInterest": [
+        "Agentic AI"
+      ],
+      "features": [
+        "Lecture-style"
+      ],
+      "roles": [
+        "Developer / Engineer",
+        "Business Executive",
+        "IT Professional / Technical Manager"
+      ],
+      "room": "Floor -3, Breakout 1, Turkcell Stage",
+      "services": [
+        "Amazon Bedrock"
+      ],
+      "sessionId": "AIM301",
+      "sessionTime": {
+        "date": "2026-09-23",
+        "length": "30",
+        "time": "12:10",
+        "timezone": "Europe/Istanbul"
+      },
+      "speakers": [
+        {
+          "name": "Oğuzhan Durmuş, Data Science Manager, Migros One"
+        },
+        {
+          "name": "Eren Tunçer, Sr. Solutions Architect, AWS"
+        }
+      ],
+      "title": "How Migros One Built Enterprise AI Agents on Bedrock AgentCore - [TR]",
+      "topics": [
+        "Artificial Intelligence"
+      ],
+      "type": "Breakout session"
+    }
+  ],
+  "totalCount": 51
+}

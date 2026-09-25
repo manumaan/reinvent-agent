@@ -1,120 +1,134 @@
 {
-  "totalCount": 10,
-  "sessions": [
+  "items": [
     {
-      "sessionId": "sess-0007",
-      "code": "SVS402",
+      "sessionId": "SVS402",
+      "abbreviation": "SVS402",
       "title": "Lambda performance tuning deep dive",
       "abstract": "SYNTHETIC FIXTURE. Lambda performance tuning deep dive. Covers AWS Lambda in depth.",
       "type": "Breakout session",
-      "level": "400 - Expert",
       "tracks": [
         "Serverless"
       ],
       "topics": [],
-      "industries": [],
       "roles": [
-        "Developer"
+        "Developer / Engineer"
       ],
       "services": [
         "AWS Lambda"
       ],
-      "start": "2026-12-01T13:30:00-08:00",
-      "end": "2026-12-01T14:30:00-08:00",
-      "room": "South Seas C",
       "venue": "Mandalay Bay",
-      "allDay": false,
-      "reservable": true,
-      "fullness": "Available",
+      "room": "Level 2, South Seas C",
+      "sessionTime": {
+        "date": "2026-12-01",
+        "time": "13:30",
+        "length": "60",
+        "timezone": "America/Los_Angeles"
+      },
+      "isReservable": true,
       "speakers": [
-        "Example Speaker"
-      ]
+        {
+          "name": "Example Speaker, AWS"
+        }
+      ],
+      "level": "400 - Expert",
+      "seatAvailability": "veryLimited"
     },
     {
-      "sessionId": "sess-0008",
-      "code": "SVS320",
+      "sessionId": "SVS320",
+      "abbreviation": "SVS320",
       "title": "Serverless event sourcing patterns",
       "abstract": "SYNTHETIC FIXTURE. Serverless event sourcing patterns. Covers Amazon DynamoDB, AWS Lambda in depth.",
       "type": "Chalk talk",
-      "level": "300 - Advanced",
       "tracks": [
         "Serverless"
       ],
       "topics": [],
-      "industries": [],
       "roles": [
-        "Developer"
+        "Developer / Engineer"
       ],
       "services": [
         "Amazon DynamoDB",
         "AWS Lambda"
       ],
-      "start": "2026-12-01T14:00:00-08:00",
-      "end": "2026-12-01T15:00:00-08:00",
-      "room": "Level 5, Palazzo Ballroom",
       "venue": "Venetian",
-      "allDay": false,
-      "reservable": true,
-      "fullness": "Available",
+      "room": "Level 5, Palazzo Ballroom B",
+      "sessionTime": {
+        "date": "2026-12-01",
+        "time": "14:00",
+        "length": "60",
+        "timezone": "America/Los_Angeles"
+      },
+      "isReservable": true,
       "speakers": [
-        "Example Speaker"
-      ]
+        {
+          "name": "Example Speaker, AWS"
+        }
+      ],
+      "level": "300 - Advanced",
+      "seatAvailability": "available"
     },
     {
-      "sessionId": "sess-0009",
-      "code": "DAT401",
+      "sessionId": "DAT401",
+      "abbreviation": "DAT401",
       "title": "DynamoDB data modeling for serverless",
       "abstract": "SYNTHETIC FIXTURE. DynamoDB data modeling for serverless. Covers Amazon DynamoDB in depth.",
       "type": "Code talk",
-      "level": "400 - Expert",
       "tracks": [
         "Databases"
       ],
       "topics": [],
-      "industries": [],
       "roles": [
-        "Developer"
+        "Developer / Engineer"
       ],
       "services": [
         "Amazon DynamoDB"
       ],
-      "start": "2026-12-01T15:30:00-08:00",
-      "end": "2026-12-01T16:30:00-08:00",
-      "room": "Level 5, Palazzo Ballroom",
       "venue": "Venetian",
-      "allDay": false,
-      "reservable": true,
-      "fullness": "Filling up",
+      "room": "Level 5, Palazzo Ballroom B",
+      "sessionTime": {
+        "date": "2026-12-01",
+        "time": "15:30",
+        "length": "60",
+        "timezone": "America/Los_Angeles"
+      },
+      "isReservable": false,
       "speakers": [
-        "Example Speaker"
-      ]
+        {
+          "name": "Example Speaker, AWS"
+        }
+      ],
+      "level": "400 - Expert",
+      "seatAvailability": "walkUp"
     },
     {
-      "sessionId": "sess-0010",
-      "code": "KEY001",
+      "sessionId": "KEY001",
+      "abbreviation": "KEY001",
       "title": "Keynote",
       "abstract": "SYNTHETIC FIXTURE. Keynote. Covers the event in depth.",
       "type": "Keynote",
-      "level": null,
       "tracks": [
         "Keynote"
       ],
       "topics": [],
-      "industries": [],
       "roles": [
-        "Developer"
+        "Developer / Engineer"
       ],
       "services": [],
-      "start": "2026-12-01T08:00:00-08:00",
-      "end": "2026-12-01T10:30:00-08:00",
-      "room": "Room 116",
       "venue": "MGM Grand",
-      "allDay": false,
-      "reservable": false,
-      "fullness": null,
+      "room": "Level 1, Room 116",
+      "sessionTime": {
+        "date": "2026-12-01",
+        "time": "08:00",
+        "length": "150",
+        "timezone": "America/Los_Angeles"
+      },
+      "isReservable": false,
       "speakers": [
-        "Example Speaker"
+        {
+          "name": "Example Speaker, AWS"
+        }
       ]
     }
-  ]
+  ],
+  "totalCount": 10
 }

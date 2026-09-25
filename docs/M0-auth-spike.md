@@ -38,8 +38,12 @@ Implemented in `src/reinvent_agent/events_api/auth.py`; tests are in `tests/test
 4. **Fallback kept:** if the refresh fails at run time (revoked or expired), the reservation Lambda sends an SNS notification with the exact CLI command to run. The approved plan is kept, so re-running is one command.
 5. **Sign-out** (`reinvent-agent auth logout`) revokes the refresh token, which also kills the copy pushed to Secrets Manager, and deletes local tokens. The Builder ID browser session is ended separately at https://profile.aws.amazon.com.
 
-## Still to verify against the live API
-`docs.aws.amazon.com` is now reachable, and the guide has been read. `api.awsevents.com` is still blocked from this sandbox, so these are open:
-- Exact JSON field names for sessions and events (personal time fields are documented and now exact; the rest accept several spellings; see `models.py`)
-- Exact reason codes on `ReserveSessions` failures
-- Whether `reinvent2025` is served with `includePast=true` (design Q4)
+## Verified against the live API (2026-09-25)
+- `openapi.json` v1.0.0 is checked in at `fixtures/openapi.json`, and `models.py` now matches it exactly.
+- `ListEvents?includePast=true` lists **`reinvent2026`** (Nov 30 – Dec 4, 2026, `America/Los_Angeles`) and **`reinvent2025`**. Both have `authenticationRequired: true`.
+- An anonymous `ListSessions` on `reinvent2026` returns `401 "Sign in to continue"`, as documented.
+- A public event's catalog parses end to end (`fixtures/public/`).
+
+## Still open (needs a signed-in, registered attendee)
+- Whether re:Invent sessions carry `venue` and `level`. The public event sampled has neither (the venue is only inside `room`, e.g. "Floor -3, Breakout 2"). The spatial layer must fall back to parsing `room`.
+- **The 2025 catalog needs registration for 2025.** A token from someone who did not attend 2025 gets `403` there. The "what's new vs last year" feature then needs a static snapshot instead (design Q4).

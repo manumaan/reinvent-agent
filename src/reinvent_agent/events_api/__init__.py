@@ -13,16 +13,17 @@ from reinvent_agent.events_api.client import (
     OperationClosedError,
 )
 from reinvent_agent.events_api.models import (
-    BatchResult,
+    BulkFailure,
+    BulkResult,
     Event,
     PersonalTime,
-    ReservationFailure,
     Schedule,
     Session,
 )
 
 __all__ = [
-    "BatchResult",
+    "BulkFailure",
+    "BulkResult",
     "Event",
     "EventsApiClient",
     "EventsApiError",
@@ -30,7 +31,6 @@ __all__ = [
     "NotRegisteredError",
     "OperationClosedError",
     "PersonalTime",
-    "ReservationFailure",
     "Schedule",
     "Session",
     "TokenProvider",

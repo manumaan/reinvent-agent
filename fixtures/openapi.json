@@ -1,0 +1,2232 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+        "title": "AWS Events API",
+        "version": "1.0.0",
+        "description": "API for AWS event data: browse events, browse their sessions, and manage your schedule."
+    },
+    "paths": {
+        "/v1/events": {
+            "get": {
+                "description": "Lists AWS events. Returns ongoing and upcoming events by default; set includePast to also include\nevents that have already ended.",
+                "operationId": "ListEvents",
+                "parameters": [
+                    {
+                        "name": "includePast",
+                        "in": "query",
+                        "description": "Include events that have already ended. Defaults to false (ongoing and upcoming events only).",
+                        "schema": {
+                            "type": "boolean",
+                            "description": "Include events that have already ended. Defaults to false (ongoing and upcoming events only)."
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "ListEvents 200 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListEventsResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}": {
+            "get": {
+                "description": "Gets a single AWS event by id, with the same fields as a list entry. Not filtered by date: an event that has\nalready ended is still returned, so a link to a specific event keeps working after the event is over.",
+                "operationId": "GetEvent",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event to retrieve.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event to retrieve."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "GetEvent 200 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GetEventResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "EventNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/favorites": {
+            "post": {
+                "description": "Marks one or more sessions as favorites for the caller. Requires attendee sign-in for the event. A favorite\nrecords interest only; it does not reserve a seat. Individual sessions can fail while others succeed, so a 200\ndoes not mean everything was added; always read `failed`. A session already favorited is reported there too, so\nre-sending a request is not a safe retry.",
+                "operationId": "AssociateFavorites",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/AssociateFavoritesRequestContent"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the sessions belong to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the sessions belong to."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "AssociateFavorites 200 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AssociateFavoritesResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "SessionNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/favorites/{sessionId}": {
+            "delete": {
+                "description": "Removes one session from the caller's favorites. Requires attendee sign-in for the event. Removing a session\nthat is not favorited is a 404, so this is not a safe blind retry.",
+                "operationId": "DisassociateFavorite",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the session belongs to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the session belongs to."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "sessionId",
+                        "in": "path",
+                        "description": "The session to remove from favorites.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The session to remove from favorites."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "DisassociateFavorite 204 response"
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "SessionNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/personal-time": {
+            "post": {
+                "description": "Adds a personal time entry to the caller's schedule: a block of time that is theirs, not a session. Requires\nattendee sign-in for the event.",
+                "operationId": "CreatePersonalTime",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PersonalTimeInput"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event to add the personal time entry to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event to add the personal time entry to."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "CreatePersonalTime 204 response"
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "EventNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/personal-time/{personalTimeId}": {
+            "delete": {
+                "description": "Removes a personal time entry from the caller's schedule. Requires attendee sign-in for the event. Removing one\nthat is already gone succeeds, so a retry is safe.",
+                "operationId": "DeletePersonalTime",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the personal time entry belongs to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the personal time entry belongs to."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "personalTimeId",
+                        "in": "path",
+                        "description": "The personal time entry to remove, as returned by GetSchedule.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The personal time entry to remove, as returned by GetSchedule."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "DeletePersonalTime 204 response"
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "PersonalTimeNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PersonalTimeNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "description": "Replaces a personal time entry. Requires attendee sign-in for the event. A full replacement: every field is\nrequired, and any optional field left out is cleared.",
+                "operationId": "UpdatePersonalTime",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/PersonalTimeInput"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the personal time entry belongs to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the personal time entry belongs to."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "personalTimeId",
+                        "in": "path",
+                        "description": "The personal time entry to replace, as returned by GetSchedule.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The personal time entry to replace, as returned by GetSchedule."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "UpdatePersonalTime 204 response"
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "PersonalTimeNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/PersonalTimeNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/reservations": {
+            "post": {
+                "description": "Reserves seats for the caller in one or more sessions. Requires attendee sign-in for the event. Individual\nsessions can fail while others succeed, so a 200 does not mean everything was reserved; always read `failed`.\nA session already reserved is reported there too, so re-sending a request is not a safe retry.",
+                "operationId": "ReserveSessions",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "$ref": "#/components/schemas/ReserveSessionsRequestContent"
+                            }
+                        }
+                    },
+                    "required": true
+                },
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the sessions belong to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the sessions belong to."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "ReserveSessions 200 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ReserveSessionsResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "SessionNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/reservations/{sessionId}": {
+            "delete": {
+                "description": "Cancels the caller's reservation for one session. Requires attendee sign-in for the event. Cancelling a\nsession that is not reserved is a 404, so this is not a safe blind retry.",
+                "operationId": "CancelReservation",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the session belongs to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the session belongs to."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "sessionId",
+                        "in": "path",
+                        "description": "The session whose reservation to cancel.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The session whose reservation to cancel."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "CancelReservation 204 response"
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "SessionNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/schedule": {
+            "get": {
+                "description": "Gets the caller's own schedule for an event: reserved sessions, favorites and personal time entries.\nRequires attendee sign-in for the event.",
+                "operationId": "GetSchedule",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event whose schedule to retrieve.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event whose schedule to retrieve."
+                        },
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "GetSchedule 200 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GetScheduleResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "EventNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/sessions": {
+            "get": {
+                "description": "Lists an event's sessions, a page at a time. Sessions of events that require attendee sign-in are not\navailable anonymously.",
+                "operationId": "ListSessions",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event whose sessions to list.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event whose sessions to list."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "locale",
+                        "in": "query",
+                        "description": "BCP-47 language tag (e.g. \"en-US\", \"pt-BR\") for localized text. Falls back to en-US when the\nrequested language is unavailable or omitted.",
+                        "schema": {
+                            "type": "string",
+                            "description": "BCP-47 language tag (e.g. \"en-US\", \"pt-BR\") for localized text. Falls back to en-US when the\nrequested language is unavailable or omitted."
+                        }
+                    },
+                    {
+                        "name": "includeAbstracts",
+                        "in": "query",
+                        "description": "Set false to omit each session's `abstract`, the largest field. No other field changes. Defaults\nto true.",
+                        "schema": {
+                            "type": "boolean",
+                            "description": "Set false to omit each session's `abstract`, the largest field. No other field changes. Defaults\nto true."
+                        }
+                    },
+                    {
+                        "name": "nextToken",
+                        "in": "query",
+                        "description": "The `nextToken` from the previous response, treated as opaque. A full walk returns all sessions in\nthe catalog.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 512,
+                            "minLength": 1,
+                            "description": "The `nextToken` from the previous response, treated as opaque. A full walk returns all sessions in\nthe catalog."
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "ListSessions 200 response",
+                        "headers": {
+                            "Content-Language": {
+                                "description": "The language used for localized text in this response, after any fallback.",
+                                "schema": {
+                                    "type": "string",
+                                    "description": "The language used for localized text in this response, after any fallback."
+                                },
+                                "required": true
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ListSessionsResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "EventNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/events/{eventId}/sessions/{sessionId}": {
+            "get": {
+                "description": "Gets one session within an event. Sessions of events that require attendee sign-in are not available\nanonymously.",
+                "operationId": "GetSession",
+                "parameters": [
+                    {
+                        "name": "eventId",
+                        "in": "path",
+                        "description": "The event the session belongs to.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The event the session belongs to."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "sessionId",
+                        "in": "path",
+                        "description": "The session to retrieve.",
+                        "schema": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1,
+                            "description": "The session to retrieve."
+                        },
+                        "required": true
+                    },
+                    {
+                        "name": "locale",
+                        "in": "query",
+                        "description": "BCP-47 language tag (e.g. \"en-US\", \"pt-BR\") for localized text. Falls back to en-US when the\nrequested language is unavailable or omitted.",
+                        "schema": {
+                            "type": "string",
+                            "description": "BCP-47 language tag (e.g. \"en-US\", \"pt-BR\") for localized text. Falls back to en-US when the\nrequested language is unavailable or omitted."
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "GetSession 200 response",
+                        "headers": {
+                            "Content-Language": {
+                                "description": "The language used for localized text in this response, after any fallback.",
+                                "schema": {
+                                    "type": "string",
+                                    "description": "The language used for localized text in this response, after any fallback."
+                                },
+                                "required": true
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/GetSessionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "ValidationException 400 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ValidationExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "AuthenticationRequiredException 401 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/AuthenticationRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "EventAuthRequiredException 403 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventAuthRequiredExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "SessionNotFoundException 404 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/SessionNotFoundExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "409": {
+                        "description": "OperationUnavailableException 409 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/OperationUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "429": {
+                        "description": "ThrottlingException 429 response",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "How long to wait before retrying, in seconds.",
+                                "schema": {
+                                    "type": "number",
+                                    "description": "How long to wait before retrying, in seconds."
+                                }
+                            }
+                        },
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/ThrottlingExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "EventsServiceException 500 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsServiceExceptionResponseContent"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "EventsUnavailableException 503 response",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/EventsUnavailableExceptionResponseContent"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    },
+    "components": {
+        "schemas": {
+            "AssociateFavoritesRequestContent": {
+                "type": "object",
+                "properties": {
+                    "sessionIds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1
+                        },
+                        "maxItems": 10,
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "description": "The sessions to add as favorites."
+                    }
+                },
+                "required": [
+                    "sessionIds"
+                ]
+            },
+            "AssociateFavoritesResponseContent": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "$ref": "#/components/schemas/BulkResult"
+                    }
+                },
+                "required": [
+                    "result"
+                ]
+            },
+            "AuthenticationRequiredExceptionResponseContent": {
+                "type": "object",
+                "description": "This event is not available anonymously. The response's `WWW-Authenticate` header says where to authenticate.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "BulkFailure": {
+                "type": "object",
+                "description": "One session a bulk request was refused for.",
+                "properties": {
+                    "sessionId": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "description": "The session this failure refers to."
+                    },
+                    "code": {
+                        "$ref": "#/components/schemas/BulkFailureCode"
+                    },
+                    "conflictsWith": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1
+                        },
+                        "maxItems": 100,
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "description": "The caller's already-scheduled sessions that overlap this one, when the refusal was a time clash. Absent\nfor every other kind of refusal, and never empty when present."
+                    }
+                },
+                "required": [
+                    "code",
+                    "sessionId"
+                ]
+            },
+            "BulkFailureCode": {
+                "type": "string",
+                "description": "Why one session in a bulk request was refused, as a stable value safe to branch on.\n\nTreat an unrecognized value as a generic refusal: values are added as the event platform grows, and a client\nthat switches exhaustively on today's set would break on the next one.",
+                "enum": [
+                    "sessionNotReservable",
+                    "scheduleConflict",
+                    "alreadyScheduled",
+                    "sessionFull",
+                    "insufficientAccess",
+                    "timePassed",
+                    "alreadyFavorited",
+                    "notFavorited",
+                    "other"
+                ]
+            },
+            "BulkResult": {
+                "type": "object",
+                "description": "The outcome of a bulk request, which can succeed for some sessions and fail for others. A request is\nreported per session: check `failed` even on a 200.",
+                "properties": {
+                    "successful": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1
+                        },
+                        "maxItems": 1000,
+                        "uniqueItems": true,
+                        "description": "The sessions the request was applied to. Empty when none succeeded."
+                    },
+                    "failed": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/BulkFailure"
+                        },
+                        "maxItems": 10,
+                        "description": "The sessions the request was refused for, each with a `code`. Empty when everything succeeded."
+                    }
+                },
+                "required": [
+                    "failed",
+                    "successful"
+                ]
+            },
+            "Event": {
+                "type": "object",
+                "description": "A single AWS event.",
+                "properties": {
+                    "eventId": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "description": "Unique event identifier, stable across requests."
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Display name of the event."
+                    },
+                    "eventType": {
+                        "type": "string",
+                        "description": "Event series or category, e.g. \"AWS Global Summit\"."
+                    },
+                    "startDate": {
+                        "type": "string",
+                        "description": "Start date and time, ISO-8601 with UTC offset."
+                    },
+                    "endDate": {
+                        "type": "string",
+                        "description": "End date and time, ISO-8601 with UTC offset."
+                    },
+                    "isOnline": {
+                        "type": "boolean",
+                        "description": "Whether the event takes place online rather than at a physical venue."
+                    },
+                    "timezone": {
+                        "type": "string",
+                        "description": "IANA timezone the event is scheduled in, e.g. \"America/Sao_Paulo\"."
+                    },
+                    "timezoneAbbreviation": {
+                        "type": "string",
+                        "description": "Short timezone abbreviation for display, e.g. \"BRT\"."
+                    },
+                    "timeFormat": {
+                        "type": "string",
+                        "description": "Preferred time-of-day display for the event, either \"12 hour\" or \"24 hour\"."
+                    },
+                    "address": {
+                        "$ref": "#/components/schemas/EventAddress"
+                    },
+                    "supportedLanguageCodes": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "BCP-47 language tags this event supports."
+                    },
+                    "authenticationRequired": {
+                        "type": "boolean",
+                        "description": "Whether the event's deeper content requires attendee login."
+                    }
+                },
+                "required": [
+                    "authenticationRequired",
+                    "endDate",
+                    "eventId",
+                    "eventType",
+                    "isOnline",
+                    "name",
+                    "startDate"
+                ]
+            },
+            "EventAddress": {
+                "type": "object",
+                "description": "Physical location of an event.",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "The event's city."
+                    }
+                }
+            },
+            "EventAuthRequiredExceptionResponseContent": {
+                "type": "object",
+                "description": "The caller is signed in but not registered for this event.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "EventNotFoundExceptionResponseContent": {
+                "type": "object",
+                "description": "The requested event does not exist (or is not publicly listed).",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "EventsServiceExceptionResponseContent": {
+                "type": "object",
+                "description": "The service could not process the request due to an internal error.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "EventsUnavailableExceptionResponseContent": {
+                "type": "object",
+                "description": "The service is temporarily unavailable. Retriable: clients should back off and retry.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "GetEventResponseContent": {
+                "type": "object",
+                "properties": {
+                    "event": {
+                        "$ref": "#/components/schemas/Event"
+                    }
+                },
+                "required": [
+                    "event"
+                ]
+            },
+            "GetScheduleResponseContent": {
+                "type": "object",
+                "properties": {
+                    "schedule": {
+                        "$ref": "#/components/schemas/Schedule"
+                    }
+                },
+                "required": [
+                    "schedule"
+                ]
+            },
+            "GetSessionResponseContent": {
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "$ref": "#/components/schemas/Session"
+                    }
+                },
+                "required": [
+                    "session"
+                ]
+            },
+            "ListEventsResponseContent": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Event"
+                        },
+                        "maxItems": 1000,
+                        "description": "The events in this response. Empty when there are none."
+                    }
+                },
+                "required": [
+                    "items"
+                ]
+            },
+            "ListSessionsResponseContent": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Session"
+                        },
+                        "maxItems": 250,
+                        "description": "This page of sessions, ordered by `sessionId`. Empty when the event has no published sessions."
+                    },
+                    "totalCount": {
+                        "type": "number",
+                        "description": "The number of sessions in the event's catalog."
+                    },
+                    "nextToken": {
+                        "type": "string",
+                        "maxLength": 512,
+                        "minLength": 1,
+                        "description": "Pass as `nextToken` to fetch the following page. Absent on the last page."
+                    }
+                },
+                "required": [
+                    "items",
+                    "totalCount"
+                ]
+            },
+            "OperationUnavailableExceptionResponseContent": {
+                "type": "object",
+                "description": "This operation has been intentionally disabled and is not accepting requests at this time. Retrying will not\nhelp until it is re-enabled.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "PersonalTime": {
+                "type": "object",
+                "description": "A personal time entry on the caller's schedule.",
+                "properties": {
+                    "personalTimeId": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "description": "Identifies this entry, for update and removal."
+                    },
+                    "startDateTime": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                        "description": "When the block starts, written `YYYY-MM-DDTHH:MM:SS` in UTC (e.g. \"2025-12-02T16:00:00\")."
+                    },
+                    "endDateTime": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                        "description": "When the block ends, in the same form as `startDateTime`."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Short label for the block."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Longer description of the block."
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "Free-text location of the block, when one was given."
+                    }
+                },
+                "required": [
+                    "description",
+                    "endDateTime",
+                    "personalTimeId",
+                    "startDateTime",
+                    "title"
+                ]
+            },
+            "PersonalTimeInput": {
+                "type": "object",
+                "description": "The values of a personal time entry: a block of the caller's own time on their schedule, not a session.",
+                "properties": {
+                    "startDateTime": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                        "description": "When the block starts, written `YYYY-MM-DDTHH:MM:SS` (e.g. \"2025-12-02T16:00:00\"). Always UTC, so a trailing\n\"Z\" or an offset such as \"+01:00\" is rejected rather than converted. A block is stored to the minute, so the\nseconds must be `00`."
+                    },
+                    "endDateTime": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}$",
+                        "description": "When the block ends, in the same form as `startDateTime`. Must be after `startDateTime`, and the length\nbetween the two must be a whole number of 5-minute increments."
+                    },
+                    "title": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "description": "Short label for the block."
+                    },
+                    "description": {
+                        "type": "string",
+                        "maxLength": 250,
+                        "minLength": 1,
+                        "description": "Longer description of the block."
+                    },
+                    "location": {
+                        "type": "string",
+                        "maxLength": 255,
+                        "minLength": 1,
+                        "description": "Free-text location of the block. Optional."
+                    }
+                },
+                "required": [
+                    "description",
+                    "endDateTime",
+                    "startDateTime",
+                    "title"
+                ]
+            },
+            "PersonalTimeNotFoundExceptionResponseContent": {
+                "type": "object",
+                "description": "The personal time entry is not on the caller's schedule: either it never existed, it was already removed, or it\nbelongs to another attendee. All cases share this one error because a caller cannot act on them differently.\n\nAn unknown event on these routes is also a 404. The two are separate errors in the model but share the status, so\na generated client sees one 404 response; read the message to tell them apart.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "ReserveSessionsRequestContent": {
+                "type": "object",
+                "properties": {
+                    "sessionIds": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1
+                        },
+                        "maxItems": 10,
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "description": "The sessions to reserve."
+                    }
+                },
+                "required": [
+                    "sessionIds"
+                ]
+            },
+            "ReserveSessionsResponseContent": {
+                "type": "object",
+                "properties": {
+                    "result": {
+                        "$ref": "#/components/schemas/BulkResult"
+                    }
+                },
+                "required": [
+                    "result"
+                ]
+            },
+            "Schedule": {
+                "type": "object",
+                "description": "One attendee's schedule for an event. Every list is present, and is empty rather than absent when it has no\nentries. The session lists carry ids; look a session up to get its details.",
+                "properties": {
+                    "reserved": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1
+                        },
+                        "maxItems": 1000,
+                        "uniqueItems": true,
+                        "description": "Sessions the attendee holds a seat reservation for."
+                    },
+                    "favorites": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "maxLength": 128,
+                            "minLength": 1
+                        },
+                        "maxItems": 1000,
+                        "uniqueItems": true,
+                        "description": "Sessions the attendee marked as favorites. A favorite is interest only, not a reservation."
+                    },
+                    "personalTime": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/PersonalTime"
+                        },
+                        "maxItems": 1000,
+                        "description": "The attendee's own time blocks."
+                    }
+                },
+                "required": [
+                    "favorites",
+                    "personalTime",
+                    "reserved"
+                ]
+            },
+            "SeatAvailability": {
+                "type": "string",
+                "description": "How full a session is, as a band rather than a count. Present only on reservable sessions. `walkUp` means\nno reservation is taken; attend by walking up.",
+                "enum": [
+                    "available",
+                    "limited",
+                    "veryLimited",
+                    "unavailable",
+                    "walkUp"
+                ]
+            },
+            "Session": {
+                "type": "object",
+                "description": "A single session within an event.",
+                "properties": {
+                    "sessionId": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "minLength": 1,
+                        "description": "Unique session identifier, stable across requests."
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Session title."
+                    },
+                    "abbreviation": {
+                        "type": "string",
+                        "description": "Short public session code, e.g. \"AIM3315\"."
+                    },
+                    "abstract": {
+                        "type": "string",
+                        "description": "Session abstract."
+                    },
+                    "type": {
+                        "type": "string",
+                        "description": "Session format, e.g. \"Chalk talk\", \"Workshop\"."
+                    },
+                    "level": {
+                        "type": "string",
+                        "description": "Difficulty or audience level, e.g. \"300 - Advanced\"."
+                    },
+                    "venue": {
+                        "type": "string",
+                        "description": "Venue name."
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Room name, in display form."
+                    },
+                    "isAllDaySession": {
+                        "type": "boolean",
+                        "description": "Whether the session spans the whole day."
+                    },
+                    "isReservable": {
+                        "type": "boolean",
+                        "description": "Whether the session accepts seat reservations."
+                    },
+                    "seatAvailability": {
+                        "$ref": "#/components/schemas/SeatAvailability"
+                    },
+                    "sessionTime": {
+                        "$ref": "#/components/schemas/SessionTime"
+                    },
+                    "speakers": {
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/components/schemas/Speaker"
+                        },
+                        "maxItems": 100,
+                        "description": "Speakers presenting the session."
+                    },
+                    "tracks": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Event-local programming tracks."
+                    },
+                    "topics": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Technology domains the session covers, e.g. \"Artificial Intelligence\"."
+                    },
+                    "industries": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Industries the session is aimed at."
+                    },
+                    "areasOfInterest": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Broader interest areas, e.g. \"Generative AI\"."
+                    },
+                    "roles": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Job roles the session is aimed at, e.g. \"Data Scientist\"."
+                    },
+                    "services": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "AWS services the session covers, e.g. \"Amazon SageMaker AI\"."
+                    },
+                    "segments": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Audience segments, e.g. \"Enterprise\", \"Startup\"."
+                    },
+                    "features": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Format labels, e.g. \"Interactive\"."
+                    },
+                    "customerPersonas": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Customer personas the session is aimed at, e.g. \"Architect\"."
+                    },
+                    "experiences": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Named programs the session belongs to, e.g. \"Executive Summit\". Attendance may be restricted to that\nprogram's participants."
+                    },
+                    "additionalActivities": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Additional activities associated with the session."
+                    },
+                    "focusAreas": {
+                        "type": "array",
+                        "items": {
+                            "type": "string"
+                        },
+                        "maxItems": 100,
+                        "uniqueItems": true,
+                        "description": "Focus areas the session is tagged with."
+                    }
+                },
+                "required": [
+                    "sessionId",
+                    "title"
+                ]
+            },
+            "SessionNotFoundExceptionResponseContent": {
+                "type": "object",
+                "description": "The requested session is not available: either the session does not exist within the event, or the event\nitself does not exist. Both cases share this one error because a caller cannot act on them differently.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "SessionTime": {
+                "type": "object",
+                "description": "When and for how long a session runs.",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Calendar date, e.g. \"2025-12-02\"."
+                    },
+                    "time": {
+                        "type": "string",
+                        "description": "Local start time, e.g. \"16:00\"."
+                    },
+                    "length": {
+                        "type": "string",
+                        "description": "Length in minutes, e.g. \"60\"."
+                    },
+                    "timezone": {
+                        "type": "string",
+                        "description": "Timezone the date and time are given in, when the source provides one."
+                    }
+                }
+            },
+            "Speaker": {
+                "type": "object",
+                "description": "A speaker presenting a session.",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Speaker display name."
+                    }
+                }
+            },
+            "ThrottlingExceptionResponseContent": {
+                "type": "object",
+                "description": "The caller has made too many requests in the current window and should retry later.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            },
+            "ValidationExceptionResponseContent": {
+                "type": "object",
+                "description": "The request could not be accepted as sent: a field is missing, too long, or malformed, or the request was\nrefused as a whole. The message says which. Not retriable: the same request will be refused again.",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": "Human-readable description of the error."
+                    }
+                },
+                "required": [
+                    "message"
+                ]
+            }
+        }
+    },
+    "servers": [
+        {
+            "url": "https://api.awsevents.com"
+        }
+    ]
+}

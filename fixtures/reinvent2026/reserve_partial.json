@@ -1,23 +1,24 @@
 {
-  "succeeded": [
-    "sess-0003"
-  ],
-  "failed": [
-    {
-      "sessionId": "sess-0005",
-      "reason": "SESSION_FULL"
-    },
-    {
-      "sessionId": "sess-0001",
-      "reason": "ALREADY_RESERVED"
-    },
-    {
-      "sessionId": "sess-0008",
-      "reason": "SCHEDULE_CONFLICT",
-      "conflictsWith": {
-        "type": "personalTime",
-        "id": "pt-1"
+  "result": {
+    "successful": [
+      "SVS310"
+    ],
+    "failed": [
+      {
+        "sessionId": "AIM402",
+        "code": "sessionFull"
+      },
+      {
+        "sessionId": "SVS401",
+        "code": "alreadyScheduled"
+      },
+      {
+        "sessionId": "SVS320",
+        "code": "scheduleConflict",
+        "conflictsWith": [
+          "SVS401"
+        ]
       }
-    }
-  ]
+    ]
+  }
 }

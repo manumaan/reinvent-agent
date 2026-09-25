@@ -12,10 +12,28 @@ from tests.conftest import load
 def test_list_events_needs_no_auth(make_client):
     def handler(req):
         assert "authorization" not in req.headers
-        return httpx.Response(200, json=load("events.json"))
+        return httpx.Response(200, json=load("public/events.json"))
 
-    events = make_client(handler).list_events()
-    assert [e.event_id for e in events] == ["reinvent2026", "reinvent2025"]
+    events = {e.event_id: e for e in make_client(handler).list_events()}
+    ri = events["reinvent2026"]
+    assert ri.authentication_required and ri.timezone == "America/Los_Angeles"
+    assert (ri.start_date.date().isoformat(), ri.end_date.date().isoformat()) == (
+        "2026-11-30",
+        "2026-12-04",
+    )
+    assert events["Cohort-CloudTurkiye-2026"].authentication_required is False
+
+
+def test_real_public_sessions_parse(make_client):
+    body = load("public/cloudturkiye2026_sessions.json")
+    sessions = list(make_client(lambda req: httpx.Response(200, json=body)).iter_sessions("x"))
+    s = sessions[0]
+    assert s.code == "AIM216" and s.type == "Workshop"
+    assert s.start.isoformat() == "2026-09-23T13:50:00"
+    assert s.end.isoformat() == "2026-09-23T17:00:00"
+    assert s.start_at("UTC").utcoffset().total_seconds() == 3 * 3600  # Europe/Istanbul
+    assert s.speaker_names[0].startswith("Zafer Sever")
+    assert s.venue is None and s.level is None  # absent for this event: read defensively
 
 
 def test_iter_sessions_paginates_and_parses(make_client):
@@ -37,7 +55,8 @@ def test_iter_sessions_paginates_and_parses(make_client):
     assert calls[1]["nextToken"] == "page2"
     s = sessions[0]
     assert (s.code, s.venue, s.level_number) == ("SVS401", "Venetian", 400)
-    assert s.start.hour == 9 and s.reservable
+    assert s.start.hour == 9 and s.is_reservable and s.seat_availability == "available"
+    assert sessions[-1].level_number is None and not sessions[-1].is_reservable
 
 
 def test_throttle_honours_retry_after(token_store):
@@ -47,7 +66,7 @@ def test_throttle_honours_retry_after(token_store):
         n["calls"] += 1
         if n["calls"] == 1:
             return httpx.Response(429, headers={"Retry-After": "7"})
-        return httpx.Response(200, json=load("events.json"))
+        return httpx.Response(200, json=load("public/events.json"))
 
     from reinvent_agent.events_api import EventsApiClient, TokenProvider
 
@@ -72,8 +91,12 @@ def test_401_triggers_one_refresh(make_client, token_store):
     assert state["api"] == 2
     assert token_store.load().access_token == "access-2"
     lunch = sched.personal_time[0]
-    assert (lunch.title, lunch.personal_time_id, lunch.start.hour) == ("Lunch", "pt-1", 20)
-    assert sched.reservations[0].code == "SVS401"
+    assert (lunch.title, lunch.personal_time_id, lunch.start_date_time.hour) == (
+        "Lunch",
+        "pt-1",
+        20,
+    )
+    assert sched.reserved == ["SVS401"] and sched.favorites == ["ANT305"]
 
 
 def test_reserve_batches_dedupes_and_reports_partial_failure(make_client):
@@ -81,16 +104,17 @@ def test_reserve_batches_dedupes_and_reports_partial_failure(make_client):
 
     def handler(req):
         bodies.append(json.loads(req.content))
-        return httpx.Response(200, json=load("reserve_partial.json") if len(bodies) == 1 else {})
+        empty = {"result": {"successful": [], "failed": []}}
+        return httpx.Response(200, json=load("reserve_partial.json") if len(bodies) == 1 else empty)
 
     ids = [f"s{i}" for i in range(12)] + ["s0"]
     result = make_client(handler).reserve_sessions("reinvent2026", ids)
     assert [len(b["sessionIds"]) for b in bodies] == [10, 2]
-    assert result.succeeded == ["sess-0003"]
+    assert result.successful == ["SVS310"]
     full, dup, clash = result.failed
-    assert full.is_full and not full.is_already_reserved
-    assert dup.is_already_reserved
-    assert clash.is_conflict and clash.model_extra["conflictsWith"]["id"] == "pt-1"
+    assert full.is_full and not full.already_done
+    assert dup.already_done
+    assert clash.is_conflict and clash.conflicts_with == ["SVS401"]
 
 
 def test_errors_raise(make_client):
@@ -105,7 +129,7 @@ def test_list_events_include_past(make_client):
 
     def handler(req):
         seen.append(dict(req.url.params))
-        return httpx.Response(200, json=load("events.json"))
+        return httpx.Response(200, json=load("public/events.json"))
 
     make_client(handler).list_events(include_past=True)
     assert seen == [{"includePast": "true"}]
@@ -151,7 +175,7 @@ def test_create_personal_time_sends_utc_minutes(make_client):
 
     def handler(req):
         sent.append((req.method, req.url.path, json.loads(req.content)))
-        return httpx.Response(201)
+        return httpx.Response(204)
 
     pst = timezone(timedelta(hours=-8))
     make_client(handler).create_personal_time(
