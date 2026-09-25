@@ -7,3 +7,5 @@ cdk.out/
 dist/
 *.egg-info/
 .tokens.json
+# Registration-gated catalog data: keep out of git (share privately / load to S3)
+fixtures/reinvent*/catalog*.jsonl

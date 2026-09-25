@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from reinvent_agent.events_api import EventsApiClient, FileTokenStore, TokenProvider
+from reinvent_agent.events_api import EventsApiClient, FileTokenStore, Session, TokenProvider
 from reinvent_agent.events_api.auth import (
     AuthError,
     SecretsManagerTokenStore,
@@ -95,13 +95,57 @@ def catalog_dump(
     out: Path = typer.Option(Path("catalog.jsonl"), "--out"),
     no_abstracts: bool = False,
 ):
-    """Walk ListSessions and write one JSON session per line."""
-    n = 0
+    """Walk ListSessions and write one JSON session per line (API field names)."""
+    n, total = 0, None
     with out.open("w") as f:
-        for s in _client().iter_sessions(event_id, include_abstracts=not no_abstracts):
-            f.write(json.dumps(s.model_dump(mode="json", by_alias=True, exclude_none=True)) + "\n")
-            n += 1
-    typer.echo(f"Wrote {n} sessions to {out}")
+        for page in _client().iter_session_pages(event_id, include_abstracts=not no_abstracts):
+            total = page.get("totalCount", total)
+            for raw in page["items"]:
+                s = Session.model_validate(raw)
+                f.write(json.dumps(s.model_dump(mode="json", by_alias=True, exclude_none=True)))
+                f.write("\n")
+                n += 1
+    typer.echo(f"Wrote {n} sessions to {out} (API totalCount: {total})")
+    if total is not None and n != total:
+        typer.echo("WARNING: session count differs from totalCount; run `catalog probe`.")
+
+
+@catalog_app.command("probe")
+def catalog_probe(
+    event_id: str = typer.Option(DEFAULT_EVENT, "--event"),
+    max_pages: int = typer.Option(200, help="Stop after this many pages"),
+):
+    """Diagnose a catalog walk: page sizes, totalCount, nextToken, overlap with favorites.
+
+    Prints no tokens and no abstracts, so the output is safe to paste.
+    """
+    client = _client()
+    ids: list[str] = []
+    for i, page in enumerate(client.iter_session_pages(event_id, include_abstracts=False)):
+        items = page["items"]
+        first = items[0].get("sessionId") if items else None
+        last = items[-1].get("sessionId") if items else None
+        typer.echo(
+            f"page {i + 1}: items={len(items)} totalCount={page.get('totalCount')} "
+            f"nextToken={'yes' if page.get('nextToken') else 'no'} first={first} last={last}"
+        )
+        ids.extend(x["sessionId"] for x in items)
+        if i + 1 >= max_pages:
+            typer.echo(f"stopped after {max_pages} pages")
+            break
+    unique = set(ids)
+    typer.echo(f"sessions: {len(ids)} (unique {len(unique)})")
+    try:
+        sched = client.get_schedule(event_id)
+    except Exception as e:  # diagnostics only
+        typer.echo(f"GetSchedule failed: {e}")
+        return
+    fav = set(sched.favorites)
+    typer.echo(
+        f"favorites: {len(fav)}; favorites in catalog: {len(fav & unique)}; "
+        f"catalog sessions that are NOT favorites: {len(unique - fav)}; "
+        f"reserved: {len(sched.reserved)}; personal time: {len(sched.personal_time)}"
+    )
 
 
 @catalog_app.command("schedule")

@@ -156,23 +156,30 @@ class EventsApiClient:
         body = self._request("GET", f"/events/{event_id}", auth=False)
         return Event.model_validate(body["event"])
 
-    def iter_sessions(
+    def iter_session_pages(
         self, event_id: str, *, include_abstracts: bool = True, locale: str | None = None
-    ) -> Iterator[Session]:
-        """Walk every page. Pages vary in size; only an absent ``nextToken`` ends the walk."""
+    ) -> Iterator[dict]:
+        """Raw ListSessions pages. Pages vary in size; only an absent ``nextToken`` ends
+        the walk."""
         params: dict[str, str] = {"includeAbstracts": str(include_abstracts).lower()}
         if locale:
             params["locale"] = locale
-        next_token: str | None = None
         while True:
-            if next_token:
-                params["nextToken"] = next_token
             body = self._request("GET", f"/events/{event_id}/sessions", params=params)
-            for raw in body["items"]:
-                yield Session.model_validate(raw)
+            yield body
             next_token = body.get("nextToken")
             if not next_token:
                 return
+            params["nextToken"] = next_token
+
+    def iter_sessions(
+        self, event_id: str, *, include_abstracts: bool = True, locale: str | None = None
+    ) -> Iterator[Session]:
+        for page in self.iter_session_pages(
+            event_id, include_abstracts=include_abstracts, locale=locale
+        ):
+            for raw in page["items"]:
+                yield Session.model_validate(raw)
 
     def get_session(self, event_id: str, session_id: str) -> Session:
         body = self._request("GET", f"/events/{event_id}/sessions/{session_id}")
