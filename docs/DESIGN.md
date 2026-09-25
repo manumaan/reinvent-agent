@@ -164,7 +164,11 @@ The catalog gives each session a venue and room. We add the geography.
 
 ## 7. UI
 
-For v1, a single-page **React + Vite** app on **Amplify Hosting** with Cognito sign-in and a "Connect AWS Builder ID" OAuth button. It has three panes: **Chat**, **Schedule** (week grid showing reserved, favorite and personal time), and **Map**. It streams from the AgentCore Runtime endpoint.
+For v1, a **Streamlit** app (`ui/`) that **runs locally** on the attendee's machine. It has three tabs: **Chat**, **Schedule** (a day grid showing reserved, favorite and personal time) and **Map** (pydeck/folium). It calls the AgentCore Runtime endpoint in `us-east-1` using the user's AWS credentials.
+
+**Builder ID sign-in happens inside the app.** A "Sign in with AWS Builder ID" button runs the PKCE flow and starts the `localhost:8484/callback` listener in a background thread. This works because the app runs locally, and the Events API only accepts a localhost redirect (see the M0 spike). A second button, "Enable unattended reservations", pushes the tokens to Secrets Manager.
+
+A hosted UI (React on Amplify, or Streamlit on App Runner) is deferred. It could not sign users in itself: the API has no hosted redirect, and the guide says apps that sign attendees in must run locally.
 A **CLI** (`reinvent-agent chat`) is also provided for fast development and demos.
 
 ## 8. Repo layout & tooling
@@ -175,7 +179,7 @@ agent/            Strands agent, prompts, tool schemas
 tools/            Lambda tools: catalog_search, optimizer (OR-Tools), routes
 ingest/           ListSessions paginator, normalizer, KB sync
 spatial/          venue_graph.json + builder script (Location Service)
-web/              React app (chat, schedule grid, MapLibre map)
+ui/               Streamlit app (chat, schedule grid, map, Builder ID sign-in)
 tests/            unit + fixture-based integration + RAG eval
 fixtures/         recorded API responses (sanitized)
 ```
@@ -193,7 +197,7 @@ Python 3.12, uv, ruff and pytest, with GitHub Actions CI running lint, tests and
 | M5 | Oct 21 | Web UI polish, "what's new vs 2025", demo script |
 
 ## 10. Decisions (approved 2026-09-25)
-Recommendations accepted: AgentCore + Strands, S3 Vectors + reranker, React UI, `us-east-1`, push-notification fallback for unattended auth. Q1 is resolved by the M0 spike. Q3 (network access) and Q5 (AWS account) are still open.
+Recommendations accepted: AgentCore + Strands, S3 Vectors + reranker, **Streamlit UI run locally** (React deferred), region **`us-east-1`**, push-notification fallback for unattended auth. Q1 is resolved by the M0 spike. Q3 (network access) and Q5 (AWS account) are still open.
 
 ### Original risks & open questions
 
