@@ -148,6 +148,34 @@ def catalog_probe(
     )
 
 
+@catalog_app.command("report")
+def catalog_report(
+    file: Path = typer.Option(Path("fixtures/reinvent2026/catalog.jsonl"), "--file"),
+    top: int = 15,
+):
+    """Field coverage and venue inference for a dumped catalog (no abstracts printed)."""
+    from collections import Counter
+
+    from reinvent_agent.catalog.venues import VenueInferrer, room_tokens
+
+    sessions = [Session.model_validate_json(line) for line in file.open() if line.strip()]
+    inferrer = VenueInferrer.learn(sessions)
+    results = [(s, *inferrer.infer(s)) for s in sessions]
+    typer.echo(f"{len(sessions)} sessions; learned {len(inferrer.token_venue)} room->venue keys")
+    typer.echo(f"venue source: {dict(Counter(src for _, _, src in results))}")
+    typer.echo(f"venues after inference: {dict(Counter(v for _, v, _ in results))}")
+    typer.echo(f"levels: {dict(Counter(s.level_number for s in sessions))}")
+    typer.echo(f"unscheduled (no sessionTime): {sum(1 for s in sessions if s.start is None)}")
+    unresolved = Counter(
+        " | ".join(room_tokens(s.room)) or s.room for s, v, _ in results if v is None and s.room
+    )
+    typer.echo(f"unresolved room keys (top {top}):")
+    for key, n in unresolved.most_common(top):
+        typer.echo(f"  {n:4d}  {key}")
+    learned = Counter(v for _, v, src in results if src == "room-learned")
+    typer.echo(f"inferred from learned room names, by venue: {dict(learned)}")
+
+
 @catalog_app.command("schedule")
 def catalog_schedule(event_id: str = typer.Option(DEFAULT_EVENT, "--event")):
     """Show your reservations, favorites and personal time."""

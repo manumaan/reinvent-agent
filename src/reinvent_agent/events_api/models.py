@@ -9,6 +9,7 @@ kept as plain strings because new values are added over time.
 
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -96,11 +97,9 @@ class Session(_Model):
 
     @property
     def level_number(self) -> int | None:
-        """'300 - Advanced' -> 300."""
-        if not self.level:
-            return None
-        digits = "".join(ch for ch in self.level.split("-")[0] if ch.isdigit())
-        return int(digits) if digits else None
+        """'300 – Advanced' (en dash in the live catalog) or '300 - Advanced' -> 300."""
+        m = re.match(r"\s*(\d{3})\b", self.level or "")
+        return int(m.group(1)) if m else None
 
     @property
     def day(self) -> date | None:
