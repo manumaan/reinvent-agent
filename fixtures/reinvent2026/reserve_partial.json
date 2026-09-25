@@ -10,6 +10,14 @@
     {
       "sessionId": "sess-0001",
       "reason": "ALREADY_RESERVED"
+    },
+    {
+      "sessionId": "sess-0008",
+      "reason": "SCHEDULE_CONFLICT",
+      "conflictsWith": {
+        "type": "personalTime",
+        "id": "pt-1"
+      }
     }
   ]
 }

@@ -9,7 +9,12 @@ from pathlib import Path
 import typer
 
 from reinvent_agent.events_api import EventsApiClient, FileTokenStore, TokenProvider
-from reinvent_agent.events_api.auth import SecretsManagerTokenStore, interactive_login
+from reinvent_agent.events_api.auth import (
+    AuthError,
+    SecretsManagerTokenStore,
+    interactive_login,
+    revoke,
+)
 
 DEFAULT_EVENT = os.environ.get("REINVENT_EVENT_ID", "reinvent2026")
 
@@ -58,13 +63,29 @@ def auth_push_secret(secret_id: str = typer.Option(..., envvar="REINVENT_TOKEN_S
 
 @auth_app.command("logout")
 def auth_logout():
-    FileTokenStore().clear()
-    typer.echo("Local tokens removed.")
+    """Revoke the refresh token and delete local tokens.
+
+    Tokens already pushed with `push-secret` are revoked too, since they share the
+    refresh token. To also end the Builder ID browser session, sign out at
+    https://profile.aws.amazon.com.
+    """
+    store = FileTokenStore()
+    tokens = store.load()
+    if tokens is not None:
+        try:
+            revoke(tokens.refresh_token)
+        except AuthError as e:
+            typer.echo(f"Warning: {e}")
+    store.clear()
+    typer.echo(
+        "Signed out of reinvent-agent. End the Builder ID session at "
+        "https://profile.aws.amazon.com if you want that too."
+    )
 
 
 @catalog_app.command("events")
-def catalog_events():
-    for e in EventsApiClient().list_events():
+def catalog_events(include_past: bool = typer.Option(False, "--include-past")):
+    for e in EventsApiClient().list_events(include_past=include_past):
         typer.echo(f"{e.event_id}\t{e.name}")
 
 

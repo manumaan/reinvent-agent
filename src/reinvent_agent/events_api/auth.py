@@ -6,11 +6,13 @@ so the interactive sign-in must run on the attendee's machine. After that:
 
 * access tokens (JWT) live 60 minutes;
 * refresh tokens are opaque, live 30 days, and may rotate on every refresh:
-  when the token response carries a new refresh token, the old one may stop working.
+  when the token response carries a new refresh token, the old one may stop working;
+* refreshing does NOT extend the Builder ID sign-in session, which has its own
+  lifetime, so a long-running process eventually needs a fresh interactive sign-in.
 
 That is what makes the unattended Oct 8 reservation run possible: sign in locally
-once, push the refresh token to a shared ``TokenStore`` (Secrets Manager), and let
-the cloud side refresh -- always writing a rotated refresh token back.
+shortly before, push the tokens to a shared ``TokenStore`` (Secrets Manager), and
+let the cloud side refresh -- always writing a rotated refresh token back.
 """
 
 from __future__ import annotations
@@ -33,9 +35,16 @@ import httpx
 
 AUTHORIZE_URL = "https://oauth.awsevents.com/oauth2/authorize"
 TOKEN_URL = "https://oauth.awsevents.com/oauth2/token"
+REVOKE_URL = "https://oauth.awsevents.com/oauth2/revoke"
 CLIENT_ID = "7vmom55m1qstvq8i71ph127bfq"
-REDIRECT_PORT = 8484
-REDIRECT_URI = f"http://localhost:{REDIRECT_PORT}/callback"
+# Six reserved loopback ports; redirect_uri is matched exactly, so no other port works.
+REDIRECT_PORTS = range(8484, 8490)
+
+
+def redirect_uri(port: int = REDIRECT_PORTS[0]) -> str:
+    return f"http://localhost:{port}/callback"
+
+
 SCOPE = "openid email events/access"
 IDENTITY_PROVIDER = "AWSBuilderID"
 
@@ -84,11 +93,11 @@ def code_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
-def authorization_url(challenge: str, state: str) -> str:
+def authorization_url(challenge: str, state: str, port: int = REDIRECT_PORTS[0]) -> str:
     params = {
         "response_type": "code",
         "client_id": CLIENT_ID,
-        "redirect_uri": REDIRECT_URI,
+        "redirect_uri": redirect_uri(port),
         "scope": SCOPE,
         "identity_provider": IDENTITY_PROVIDER,
         "code_challenge": challenge,
@@ -208,14 +217,17 @@ class TokenProvider:
 # --- interactive login ------------------------------------------------------
 
 
-def exchange_code(code: str, verifier: str, http: httpx.Client | None = None) -> Tokens:
+def exchange_code(
+    code: str, verifier: str, port: int = REDIRECT_PORTS[0], http: httpx.Client | None = None
+) -> Tokens:
     http = http or httpx.Client(timeout=30)
     resp = http.post(
         TOKEN_URL,
         data={
             "grant_type": "authorization_code",
             "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
+            # Must be the identical string sent on the authorization request.
+            "redirect_uri": redirect_uri(port),
             "code": code,
             "code_verifier": verifier,
         },
@@ -225,29 +237,50 @@ def exchange_code(code: str, verifier: str, http: httpx.Client | None = None) ->
     return Tokens.from_token_response(resp.json())
 
 
-def _wait_for_callback(expected_state: str, timeout: float) -> str:
-    result: dict[str, str] = {}
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
-            parsed = urlparse(self.path)
-            if parsed.path != "/callback":
-                self.send_response(404)
-                self.end_headers()
-                return
-            qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
-            result.update(qs)
-            ok = "code" in qs and qs.get("state") == expected_state
-            self.send_response(200 if ok else 400)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+class _CallbackHandler(BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path != "/callback":
+            self.send_response(404)
             self.end_headers()
-            msg = "Signed in. You can close this tab." if ok else "Sign-in failed."
-            self.wfile.write(msg.encode())
+            return
+        qs = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        self.server.result.update(qs)
+        ok = "code" in qs and qs.get("state") == self.server.expected_state
+        self.send_response(200 if ok else 400)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Signed in. You can close this tab." if ok else b"Sign-in failed.")
 
-        def log_message(self, *args):
-            pass
+    def log_message(self, *args):
+        pass
 
-    server = HTTPServer(("localhost", REDIRECT_PORT), Handler)
+
+def revoke(refresh_token: str, http: httpx.Client | None = None) -> None:
+    """Stops the refresh token and anything it could mint. Access tokens already
+    issued stay valid until they expire, so discard every copy as well."""
+    http = http or httpx.Client(timeout=30)
+    resp = http.post(REVOKE_URL, data={"client_id": CLIENT_ID, "token": refresh_token})
+    if resp.status_code != 200:
+        raise AuthError(f"revoke failed ({resp.status_code}): {resp.text[:200]}")
+
+
+def bind_callback_server(handler_cls) -> HTTPServer:
+    """Bind the first free reserved port."""
+    last_error: OSError | None = None
+    for port in REDIRECT_PORTS:
+        try:
+            return HTTPServer(("localhost", port), handler_cls)
+        except OSError as e:
+            last_error = e
+    raise AuthError(
+        f"ports {REDIRECT_PORTS.start}-{REDIRECT_PORTS.stop - 1} all busy: {last_error}"
+    )
+
+
+def _wait_for_callback(
+    server: HTTPServer, result: dict[str, str], expected_state: str, timeout: float
+) -> str:
     server.timeout = 1
     deadline = time.time() + timeout
     try:
@@ -268,11 +301,14 @@ def _wait_for_callback(expected_state: str, timeout: float) -> str:
 def interactive_login(store: TokenStore, timeout: float = 300, open_browser: bool = True) -> Tokens:
     verifier = new_code_verifier()
     state = secrets.token_urlsafe(24)
-    url = authorization_url(code_challenge(verifier), state)
+    server = bind_callback_server(_CallbackHandler)
+    server.result, server.expected_state = {}, state
+    port = server.server_address[1]
+    url = authorization_url(code_challenge(verifier), state, port)
     print(f"Opening browser for AWS Builder ID sign-in:\n  {url}\n")
     if open_browser:
         webbrowser.open(url)
-    code = _wait_for_callback(state, timeout)
-    tokens = exchange_code(code, verifier)
+    code = _wait_for_callback(server, server.result, state, timeout)
+    tokens = exchange_code(code, verifier, port)
     store.save(tokens)
     return tokens

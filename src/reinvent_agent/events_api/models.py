@@ -1,10 +1,11 @@
 """Data models for AWS Events API responses.
 
-Field names follow the developer guide's prose. The OpenAPI spec
-(https://api.awsevents.com/v1/openapi.json) was not reachable when this was
-written, so each field accepts a few plausible spellings via ``AliasChoices``
-and unknown fields are kept (``extra="allow"``). Tighten once the spec is
-checked in under ``fixtures/openapi.json``.
+Personal time fields are exact (the guide documents them). Session and event
+field names follow the guide's prose; the OpenAPI spec
+(https://api.awsevents.com/v1/openapi.json) has not been checked yet, so those
+accept a few plausible spellings via ``AliasChoices`` and keep unknown fields
+(``extra="allow"``). The guide also says any session field may be absent, so
+every session field except the ID is optional.
 """
 
 from __future__ import annotations
@@ -65,12 +66,20 @@ class Session(_Model):
 
 
 class PersonalTime(_Model):
+    """A personal time entry.
+
+    On the wire, times are UTC ``YYYY-MM-DDTHH:mm:ss`` with no offset, to the
+    minute, and the duration is a whole number of 5-minute increments.
+    """
+
     personal_time_id: str | None = Field(
         default=None, validation_alias=_alias("personalTimeId", "id")
     )
-    title: str = Field(default="", validation_alias=_alias("title", "name"))
-    start: datetime = Field(validation_alias=_alias("start", "startTime"))
-    end: datetime = Field(validation_alias=_alias("end", "endTime"))
+    title: str
+    description: str = ""
+    start: datetime = Field(validation_alias=_alias("startDateTime", "start"))
+    end: datetime = Field(validation_alias=_alias("endDateTime", "end"))
+    location: str | None = None
 
 
 class Schedule(_Model):
@@ -84,6 +93,9 @@ class Schedule(_Model):
 
 
 class ReservationFailure(_Model):
+    """One refused session. Reason codes grow over time: an unrecognised code is a
+    refusal we cannot act on. A clash also names what it clashes with (kept as extra)."""
+
     session_id: str = Field(validation_alias=_alias("sessionId", "id"))
     reason: str = Field(default="", validation_alias=_alias("reason", "code", "errorCode"))
     message: str | None = None
@@ -102,8 +114,9 @@ class ReservationFailure(_Model):
         return "already" in r or "duplicate" in r
 
 
-class ReserveResult(_Model):
-    """ReserveSessions returns 200 even on partial failure: always read ``failed``."""
+class BatchResult(_Model):
+    """ReserveSessions and AssociateFavorites return 200 even on partial failure:
+    always read ``failed``."""
 
     succeeded: list[str] = Field(
         default_factory=list, validation_alias=_alias("succeeded", "successful", "reserved")

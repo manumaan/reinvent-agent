@@ -101,3 +101,50 @@ def test_secrets_manager_store_roundtrip():
         assert (
             json.loads(sm.get_secret_value(SecretId="tok")["SecretString"])["refresh_token"] == "r"
         )
+
+
+def test_login_binds_next_reserved_port_and_exchanges_with_same_uri(tmp_path, monkeypatch):
+    import socket
+    import threading
+
+    blocker = socket.socket()
+    blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        blocker.bind(("localhost", 8484))
+        blocker.listen()
+    except OSError:
+        pytest.skip("port 8484 unavailable in this environment")
+
+    captured = {}
+
+    def fake_open(url):
+        q = parse_qs(urlparse(url).query)
+        captured["redirect_uri"] = q["redirect_uri"][0]
+
+        def hit():
+            cb = f"{q['redirect_uri'][0]}?code=abc&state={q['state'][0]}"
+            httpx.get(cb.replace("localhost", "127.0.0.1"))
+
+        threading.Timer(0.2, hit).start()
+        return True
+
+    def fake_exchange(code, verifier, port, http=None):
+        captured["exchange"] = (code, auth.redirect_uri(port))
+        return Tokens("a", "r", time.time() + 3600)
+
+    monkeypatch.setattr(auth.webbrowser, "open", fake_open)
+    monkeypatch.setattr(auth, "exchange_code", fake_exchange)
+    store = FileTokenStore(tmp_path / "t.json")
+    try:
+        auth.interactive_login(store, timeout=10)
+    finally:
+        blocker.close()
+    assert captured["redirect_uri"] == "http://localhost:8485/callback"
+    assert captured["exchange"] == ("abc", "http://localhost:8485/callback")
+    assert store.load().access_token == "a"
+
+
+def test_revoke_posts_refresh_token():
+    seen = []
+    auth.revoke("refresh-x", http=_token_http({}, seen))
+    assert seen[0] == {"client_id": [auth.CLIENT_ID], "token": ["refresh-x"]}

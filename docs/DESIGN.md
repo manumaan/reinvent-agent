@@ -27,7 +27,14 @@ Sources: the developer guide pages for ListEvents, ListSessions, GetSession, Get
 **Session fields:** `sessionId`, title, abstract, code, type, level, tracks, topics, industries, roles, services, start/end, **room and venue**, all-day flag, reservable flag, coarse fullness, and speakers.
 → Venue metadata exists, so feature #3 is feasible.
 
-**MCP server:** exposes the same operations as tools. It requires sign-in on **every** call, including catalog reads.
+**MCP server** (`https://api.awsevents.com/mcp`, streamable HTTP): exposes the same 12 operations as tools. It requires sign-in on **every** call, including catalog reads, and the client does its own OAuth on a fixed localhost callback.
+
+**Behaviour that shapes the design** (from the guide's *Quotas* and *Handling errors* pages):
+- **Quotas per attendee per minute:** `ReserveSessions` and `AssociateFavorites` 30 *sessions* (batching saves round trips, not quota). `ListSessions` and `GetSession` 120. `GetSchedule` 60. `429` comes with `Retry-After`.
+- **`409` = operation closed.** Reservations return 409 until reserved seating opens. The Oct 8 job polls on 409.
+- **Writes have no idempotency key.** After an unknown outcome, reconcile from `GetSchedule` (the source of truth) and send only what is missing. Single removals are safe to retry (404 = already gone).
+- **`403` with a JSON body** means you are not registered for the event. **`403` with no body** means the edge is refusing you, so slow down.
+- **Any session field may be absent.** Pages vary in size: only a missing `nextToken` ends the walk.
 
 Also available: `DisassociateFavorite` (`DELETE …/favorites/{sessionId}`) and `CancelReservation` (`DELETE …/reservations/{sessionId}`). `ReserveSessions` takes 1–10 distinct IDs and returns 200 even on partial failure: the failure reasons are full, time conflict, or already reserved. Throttling returns `429` + `Retry-After`. Auth details (PKCE, localhost-only redirect, 30-day rotating refresh tokens) are in [`M0-auth-spike.md`](M0-auth-spike.md).
 
@@ -50,8 +57,9 @@ flowchart LR
   end
   AR <--> MEM
   AR --> GW
-  GW -->|MCP| EVMCP[AWS Events MCP server]
   GW -->|Lambda targets| T1[catalog_search]
+  GW --> T4[schedule tools<br/>REST client + reconcile]
+  T4 -->|REST, stored token| API
   GW --> T2[optimize_schedule]
   GW --> T3[plan_routes]
   ID -.token.-> GW
@@ -72,7 +80,8 @@ flowchart LR
 ```
 
 ### Why AgentCore rather than classic Bedrock Agents
-- **MCP-native tools.** AgentCore Gateway serves our Lambda tools and the Events MCP server behind one MCP endpoint, which matches the "Bedrock agent + MCP" pitch.
+- **MCP-native tools.** AgentCore Gateway serves all our tools as one MCP endpoint, which matches the "Bedrock agent + MCP" pitch.
+- **Schedule tools call the REST API, not the Events MCP server.** The Events MCP server expects an interactive client doing its own localhost OAuth, which a server-side agent cannot do. Our REST tools also add what an LLM-driven MCP call lacks: reconcile-from-`GetSchedule`, per-session failure handling and quota pacing. For development, the Events MCP server is still handy directly in Claude Code: `claude mcp add --transport http --scope user awsevents https://api.awsevents.com/mcp --callback-port 8484 --client-id 7vmom55m1qstvq8i71ph127bfq`.
 - **AgentCore Identity** stores each user's Builder ID OAuth token. That makes an unattended reservation run at 9 AM on Oct 8 possible.
 - **Runtime** hosts a Strands agent (Python), which gives full control of the reasoning loop. Classic action groups are more rigid.
 - Fallback: if AgentCore is unavailable in the chosen region, the same Strands agent runs on Lambda with an MCP client.
@@ -114,7 +123,7 @@ goals text ──► (1) Preference extraction (LLM → JSON constraints)
 - The agent shows a diff (+ reserve, + favorite, + personal time). Nothing is written until you click **Approve**. The approved plan is saved in DynamoDB as `plan_version`.
 - **Favorites:** `AssociateFavorites` in batches of 10. Allowed right away.
 - **Personal time:** `CreatePersonalTime` for lunch and other blocks.
-- **Reservations (Oct 8):** a one-time EventBridge Scheduler job fires at API open. The Lambda loads the approved plan, calls `GetSession` for freshness, then `ReserveSessions` in priority order. When a session is full it takes the next alternate that is still feasible, then re-runs the solver for the rest of the plan. It sends a summary email (SNS).
+- **Reservations (Oct 8):** a one-time EventBridge Scheduler job fires just before API open. The Lambda loads the approved plan and polls `ReserveSessions` with the first batch while it returns `409` (closed). Once open, it reserves in priority order, paced to the 30 sessions/min quota, so the highest-value sessions go first. After each batch it reads `GetSchedule` back as the source of truth. When a session is full it takes the next alternate that is still feasible, then re-runs the solver for the rest of the plan. It sends a summary email (SNS).
 
 ---
 
@@ -156,7 +165,7 @@ The catalog gives each session a venue and room. We add the geography.
 | Tool | Source |
 |---|---|
 | `catalog_search`, `get_session_details` | Lambda (KB + DDB) |
-| `get_my_schedule`, `add_favorites`, `reserve_sessions`, `add_personal_time` | Events MCP server via Gateway |
+| `get_my_schedule`, `add_favorites`, `reserve_sessions`, `add_personal_time` | Lambda (REST client, tokens from Secrets Manager) |
 | `update_preferences`, `optimize_schedule`, `plan_routes`, `propose_plan`, `approve_plan` | Lambda |
 
 - **Guardrails:** write tools reject calls without a current `approved_plan_id`, so the model cannot reserve on its own initiative. A Bedrock Guardrail filters topics and PII.
@@ -166,7 +175,7 @@ The catalog gives each session a venue and room. We add the geography.
 
 For v1, a **Streamlit** app (`ui/`) that **runs locally** on the attendee's machine. It has three tabs: **Chat**, **Schedule** (a day grid showing reserved, favorite and personal time) and **Map** (pydeck/folium). It calls the AgentCore Runtime endpoint in `us-east-1` using the user's AWS credentials.
 
-**Builder ID sign-in happens inside the app.** A "Sign in with AWS Builder ID" button runs the PKCE flow and starts the `localhost:8484/callback` listener in a background thread. This works because the app runs locally, and the Events API only accepts a localhost redirect (see the M0 spike). A second button, "Enable unattended reservations", pushes the tokens to Secrets Manager.
+**Builder ID sign-in happens inside the app.** A "Sign in with AWS Builder ID" button runs the PKCE flow and starts the callback listener in a background thread on the first free reserved port (`8484`–`8489`; Streamlit itself stays on 8501). This works because the app runs locally, and the Events API only accepts a localhost redirect (see the M0 spike). A second button, "Enable unattended reservations", pushes the tokens to Secrets Manager.
 
 A hosted UI (React on Amplify, or Streamlit on App Runner) is deferred. It could not sign users in itself: the API has no hosted redirect, and the guide says apps that sign attendees in must run locally.
 A **CLI** (`reinvent-agent chat`) is also provided for fast development and demos.

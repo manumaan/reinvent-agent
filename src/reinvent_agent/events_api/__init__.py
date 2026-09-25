@@ -6,22 +6,31 @@ from reinvent_agent.events_api.auth import (
     Tokens,
     TokenStore,
 )
-from reinvent_agent.events_api.client import EventsApiClient, EventsApiError
+from reinvent_agent.events_api.client import (
+    EventsApiClient,
+    EventsApiError,
+    NotRegisteredError,
+    OperationClosedError,
+)
 from reinvent_agent.events_api.models import (
+    BatchResult,
     Event,
+    PersonalTime,
     ReservationFailure,
-    ReserveResult,
     Schedule,
     Session,
 )
 
 __all__ = [
+    "BatchResult",
     "Event",
     "EventsApiClient",
     "EventsApiError",
     "FileTokenStore",
+    "NotRegisteredError",
+    "OperationClosedError",
+    "PersonalTime",
     "ReservationFailure",
-    "ReserveResult",
     "Schedule",
     "Session",
     "TokenProvider",
