@@ -1,0 +1,182 @@
+{
+  "totalCount": 10,
+  "sessions": [
+    {
+      "sessionId": "sess-0001",
+      "code": "SVS401",
+      "title": "Advanced event-driven architectures with EventBridge Pipes",
+      "abstract": "SYNTHETIC FIXTURE. Advanced event-driven architectures with EventBridge Pipes. Covers Amazon EventBridge, AWS Lambda in depth.",
+      "type": "Chalk talk",
+      "level": "400 - Expert",
+      "tracks": [
+        "Serverless"
+      ],
+      "topics": [],
+      "industries": [],
+      "roles": [
+        "Developer"
+      ],
+      "services": [
+        "Amazon EventBridge",
+        "AWS Lambda"
+      ],
+      "start": "2026-12-01T09:00:00-08:00",
+      "end": "2026-12-01T10:00:00-08:00",
+      "room": "Level 5, Palazzo Ballroom",
+      "venue": "Venetian",
+      "allDay": false,
+      "reservable": true,
+      "fullness": "Available",
+      "speakers": [
+        "Example Speaker"
+      ]
+    },
+    {
+      "sessionId": "sess-0002",
+      "code": "SVS201",
+      "title": "Getting started with AWS Lambda",
+      "abstract": "SYNTHETIC FIXTURE. Getting started with AWS Lambda. Covers AWS Lambda in depth.",
+      "type": "Breakout session",
+      "level": "200 - Intermediate",
+      "tracks": [
+        "Serverless"
+      ],
+      "topics": [],
+      "industries": [],
+      "roles": [
+        "Developer"
+      ],
+      "services": [
+        "AWS Lambda"
+      ],
+      "start": "2026-12-01T09:00:00-08:00",
+      "end": "2026-12-01T10:00:00-08:00",
+      "room": "Latour 1",
+      "venue": "Wynn",
+      "allDay": false,
+      "reservable": true,
+      "fullness": "Available",
+      "speakers": [
+        "Example Speaker"
+      ]
+    },
+    {
+      "sessionId": "sess-0003",
+      "code": "SVS310",
+      "title": "Step Functions distributed map at scale",
+      "abstract": "SYNTHETIC FIXTURE. Step Functions distributed map at scale. Covers AWS Step Functions in depth.",
+      "type": "Workshop",
+      "level": "300 - Advanced",
+      "tracks": [
+        "Serverless"
+      ],
+      "topics": [],
+      "industries": [],
+      "roles": [
+        "Developer"
+      ],
+      "services": [
+        "AWS Step Functions"
+      ],
+      "start": "2026-12-01T10:30:00-08:00",
+      "end": "2026-12-01T12:30:00-08:00",
+      "room": "Level 5, Palazzo Ballroom",
+      "venue": "Venetian",
+      "allDay": false,
+      "reservable": true,
+      "fullness": "Filling up",
+      "speakers": [
+        "Example Speaker"
+      ]
+    },
+    {
+      "sessionId": "sess-0004",
+      "code": "ANT305",
+      "title": "Zero-ETL from Aurora to Redshift in production",
+      "abstract": "SYNTHETIC FIXTURE. Zero-ETL from Aurora to Redshift in production. Covers Amazon Aurora, Amazon Redshift in depth.",
+      "type": "Breakout session",
+      "level": "300 - Advanced",
+      "tracks": [
+        "Analytics"
+      ],
+      "topics": [],
+      "industries": [],
+      "roles": [
+        "Developer"
+      ],
+      "services": [
+        "Amazon Aurora",
+        "Amazon Redshift"
+      ],
+      "start": "2026-12-01T11:00:00-08:00",
+      "end": "2026-12-01T12:00:00-08:00",
+      "room": "Alliance 305",
+      "venue": "Caesars Forum",
+      "allDay": false,
+      "reservable": true,
+      "fullness": "Available",
+      "speakers": [
+        "Example Speaker"
+      ]
+    },
+    {
+      "sessionId": "sess-0005",
+      "code": "AIM402",
+      "title": "Building multi-agent systems on Amazon Bedrock AgentCore",
+      "abstract": "SYNTHETIC FIXTURE. Building multi-agent systems on Amazon Bedrock AgentCore. Covers Amazon Bedrock in depth.",
+      "type": "Chalk talk",
+      "level": "400 - Expert",
+      "tracks": [
+        "AI/ML"
+      ],
+      "topics": [],
+      "industries": [],
+      "roles": [
+        "Developer"
+      ],
+      "services": [
+        "Amazon Bedrock"
+      ],
+      "start": "2026-12-01T12:00:00-08:00",
+      "end": "2026-12-01T13:00:00-08:00",
+      "room": "Latour 1",
+      "venue": "Wynn",
+      "allDay": false,
+      "reservable": true,
+      "fullness": "Full",
+      "speakers": [
+        "Example Speaker"
+      ]
+    },
+    {
+      "sessionId": "sess-0006",
+      "code": "AIM101",
+      "title": "What is generative AI?",
+      "abstract": "SYNTHETIC FIXTURE. What is generative AI?. Covers Amazon Bedrock in depth.",
+      "type": "Breakout session",
+      "level": "100 - Foundational",
+      "tracks": [
+        "AI/ML"
+      ],
+      "topics": [],
+      "industries": [],
+      "roles": [
+        "Developer"
+      ],
+      "services": [
+        "Amazon Bedrock"
+      ],
+      "start": "2026-12-01T13:00:00-08:00",
+      "end": "2026-12-01T14:00:00-08:00",
+      "room": "Room 116",
+      "venue": "MGM Grand",
+      "allDay": false,
+      "reservable": true,
+      "fullness": "Available",
+      "speakers": [
+        "Example Speaker"
+      ]
+    }
+  ],
+  "nextToken": "page2"
+}

@@ -1,0 +1,49 @@
+[project]
+name = "reinvent-agent"
+version = "0.1.0"
+description = "Agentic re:Invent planner: schedule optimizer, catalog RAG and venue-aware routing on the AWS Events API"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "typer>=0.12",
+]
+
+[project.optional-dependencies]
+aws = ["boto3>=1.35"]
+
+[project.scripts]
+reinvent-agent = "reinvent_agent.cli:app"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "boto3>=1.35",
+  "moto[secretsmanager]>=5",
+]
+infra = [
+  "aws-cdk-lib>=2.160",
+  "constructs>=10",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reinvent_agent"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["typer.Option", "typer.Argument", "pathlib.Path"]

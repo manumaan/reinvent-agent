@@ -1,0 +1,6 @@
+{
+  "app": "uv run --group infra python app.py",
+  "context": {
+    "@aws-cdk/aws-iam:minimizePolicies": true
+  }
+}

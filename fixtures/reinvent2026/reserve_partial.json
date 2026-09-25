@@ -1,0 +1,15 @@
+{
+  "succeeded": [
+    "sess-0003"
+  ],
+  "failed": [
+    {
+      "sessionId": "sess-0005",
+      "reason": "SESSION_FULL"
+    },
+    {
+      "sessionId": "sess-0001",
+      "reason": "ALREADY_RESERVED"
+    }
+  ]
+}

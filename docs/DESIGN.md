@@ -1,4 +1,4 @@
-# re:Invent Planner Agent — Design (v0.1, awaiting approval)
+# re:Invent Planner Agent — Design (v0.2, approved 2026-09-25)
 
 One agent, three capabilities:
 
@@ -29,7 +29,7 @@ Sources: the developer guide pages for ListEvents, ListSessions, GetSession, Get
 
 **MCP server:** exposes the same operations as tools. It requires sign-in on **every** call, including catalog reads.
 
-Not yet verified (need the OpenAPI spec): the exact names of the remove-favorite and cancel-reservation operations, rate limits, token lifetime and refresh, and the batch size for `ReserveSessions`.
+Also available: `DisassociateFavorite` (`DELETE …/favorites/{sessionId}`) and `CancelReservation` (`DELETE …/reservations/{sessionId}`). `ReserveSessions` takes 1–10 distinct IDs and returns 200 even on partial failure: the failure reasons are full, time conflict, or already reserved. Throttling returns `429` + `Retry-After`. Auth details (PKCE, localhost-only redirect, 30-day rotating refresh tokens) are in [`M0-auth-spike.md`](M0-auth-spike.md).
 
 ---
 
@@ -192,7 +192,10 @@ Python 3.12, uv, ruff and pytest, with GitHub Actions CI running lint, tests and
 | M4 | Oct 14 | Venue graph, `plan_routes`, map UI |
 | M5 | Oct 21 | Web UI polish, "what's new vs 2025", demo script |
 
-## 10. Risks & open questions (need your input)
+## 10. Decisions (approved 2026-09-25)
+Recommendations accepted: AgentCore + Strands, S3 Vectors + reranker, React UI, `us-east-1`, push-notification fallback for unattended auth. Q1 is resolved by the M0 spike. Q3 (network access) and Q5 (AWS account) are still open.
+
+### Original risks & open questions
 
 | # | Question / risk | My proposal |
 |---|---|---|
