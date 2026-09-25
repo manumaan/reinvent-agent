@@ -208,6 +208,12 @@ Python 3.12, uv, ruff and pytest, with GitHub Actions CI running lint, tests and
 | M5 | Oct 21 | Web UI polish, "what's new vs 2025", demo script |
 
 ## 10. Decisions (approved 2026-09-25)
+**M1 implementation notes (2026-09-25):**
+- **S3 Vectors is used directly, not through a Bedrock Knowledge Base.** There is one document per session with structured metadata, so the KB's chunking and ingestion jobs add nothing. Direct `PutVectors`/`QueryVectors` gives exact metadata filters (level, day, venue, type, services, time window) at lower cost. Titan Text Embeddings v2 (1024-dim, cosine).
+- **Venue inference:** 621 of 1,603 live sessions have no `venue`. It is learned from room names of sessions that do have one (`catalog/venues.py`); `venueSource` records how each venue was set.
+- **Q&A model:** Claude Opus 5 on Amazon Bedrock (`anthropic.claude-opus-5`, Anthropic SDK Bedrock Mantle client) drives a `catalog_search` tool through the SDK tool runner. The reranker is deferred until the eval set shows it is needed.
+- **Deployment:** us-east-1, default AWS profile. `ReinventAgentData` and `ReinventAgentSearch` stacks.
+
 Recommendations accepted: AgentCore + Strands, S3 Vectors + reranker, **Streamlit UI run locally** (React deferred), region **`us-east-1`**, push-notification fallback for unattended auth. Q1 is resolved by the M0 spike. Q3 (network access) and Q5 (AWS account) are still open.
 
 ### Original risks & open questions

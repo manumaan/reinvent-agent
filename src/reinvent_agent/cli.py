@@ -47,18 +47,32 @@ def auth_status():
 
 
 @auth_app.command("push-secret")
-def auth_push_secret(secret_id: str = typer.Option(..., envvar="REINVENT_TOKEN_SECRET_ID")):
+def auth_push_secret(
+    secret_id: str | None = typer.Option(
+        None, envvar="REINVENT_TOKEN_SECRET_ID", help="Defaults to the deployed stack's secret"
+    ),
+):
     """Copy local tokens to Secrets Manager so the cloud side can act unattended.
 
     After this, the cloud side owns refresh-token rotation; signing in locally
     again later simply replaces the stored tokens.
     """
+    from reinvent_agent.config import settings
+
+    cfg = settings()
+    secret_id = secret_id or cfg.token_secret_arn
+    if not secret_id:
+        typer.echo("No token secret found; deploy ReinventAgentData or pass --secret-id.")
+        raise typer.Exit(1)
     tokens = FileTokenStore().load()
     if tokens is None:
         typer.echo("Not signed in; run `reinvent-agent auth login` first.")
         raise typer.Exit(1)
-    SecretsManagerTokenStore(secret_id).save(tokens)
-    typer.echo(f"Tokens stored in {secret_id}.")
+    import boto3
+
+    client = boto3.client("secretsmanager", region_name=cfg.region)
+    SecretsManagerTokenStore(secret_id, client=client).save(tokens)
+    typer.echo("Tokens stored in Secrets Manager.")
 
 
 @auth_app.command("logout")
@@ -174,6 +188,100 @@ def catalog_report(
         typer.echo(f"  {n:4d}  {key}")
     learned = Counter(v for _, v, src in results if src == "room-learned")
     typer.echo(f"inferred from learned room names, by venue: {dict(learned)}")
+
+
+def _load_catalog(file: Path) -> list[Session]:
+    return [Session.model_validate_json(line) for line in file.open() if line.strip()]
+
+
+def _search_backend():
+    from reinvent_agent.catalog.embeddings import BedrockTitanEmbedder
+    from reinvent_agent.catalog.search import CatalogSearch
+    from reinvent_agent.catalog.vector_store import S3VectorsStore
+    from reinvent_agent.config import settings
+
+    cfg = _require_deployed(settings())
+    store = S3VectorsStore(cfg.vector_bucket, cfg.vector_index, region=cfg.region)
+    return cfg, CatalogSearch(store, BedrockTitanEmbedder(region=cfg.region))
+
+
+def _require_deployed(cfg):
+    if not cfg.vector_bucket:
+        typer.echo(
+            "No vector bucket found. Deploy first (`cd infra && npx aws-cdk@2 deploy --all`) "
+            "or set REINVENT_VECTOR_BUCKET."
+        )
+        raise typer.Exit(1)
+    return cfg
+
+
+@catalog_app.command("index")
+def catalog_index(
+    file: Path = typer.Option(Path("fixtures/reinvent2026/catalog.jsonl"), "--file"),
+    event_id: str = typer.Option(DEFAULT_EVENT, "--event"),
+    with_table: bool = typer.Option(True, help="Also upsert the DynamoDB sessions table"),
+):
+    """Embed a dumped catalog (Bedrock Titan v2) into S3 Vectors, and DynamoDB."""
+    import boto3
+
+    from reinvent_agent.catalog.embeddings import BedrockTitanEmbedder
+    from reinvent_agent.catalog.ingest import ingest
+    from reinvent_agent.catalog.vector_store import S3VectorsStore
+    from reinvent_agent.config import settings
+
+    cfg = settings()
+    sessions = _load_catalog(file)
+    table = None
+    if with_table:
+        if not cfg.sessions_table:
+            typer.echo(
+                "Set REINVENT_SESSIONS_TABLE (see `cdk deploy` outputs) or pass --no-with-table"
+            )
+            raise typer.Exit(1)
+        table = boto3.resource("dynamodb", region_name=cfg.region).Table(cfg.sessions_table)
+    report = ingest(
+        sessions,
+        event_id,
+        S3VectorsStore(cfg.vector_bucket, cfg.vector_index, region=cfg.region),
+        BedrockTitanEmbedder(region=cfg.region),
+        table=table,
+        progress=lambda done, total: typer.echo(f"  embedded {done}/{total}"),
+    )
+    typer.echo(f"Indexed {report.indexed} sessions; venue sources: {report.venue_sources}")
+
+
+@catalog_app.command("search")
+def catalog_search(
+    query: str,
+    min_level: int | None = typer.Option(None),
+    day: list[str] = typer.Option([], help="YYYY-MM-DD; repeatable"),
+    venue: list[str] = typer.Option([], help="repeatable"),
+    session_type: list[str] = typer.Option([], "--type", help="repeatable"),
+    k: int = 10,
+):
+    """Semantic search with filters, e.g. `catalog search "zero-ETL" --min-level 300`."""
+    from reinvent_agent.catalog.search import SearchFilters
+
+    cfg, search = _search_backend()
+    filters = SearchFilters(
+        event_id=cfg.event_id, min_level=min_level, days=day, venues=venue, types=session_type
+    )
+    for r in search.search(query, filters, k):
+        m = r.summary()
+        typer.echo(
+            f"[{m['code']}] {m['title']}  ({m['type']}, {m['level']}, {m['day']} {m['start']}, "
+            f"{m['venue']})  score={m['score']}"
+        )
+
+
+@app.command("ask")
+def ask(question: str):
+    """Ask a question about the catalog; answers cite session codes."""
+    from reinvent_agent.qa import CatalogQA, make_client
+
+    cfg, search = _search_backend()
+    answer = CatalogQA(search, make_client(cfg.region), cfg.model, cfg.event_id).ask(question)
+    typer.echo(answer.text)
 
 
 @catalog_app.command("schedule")

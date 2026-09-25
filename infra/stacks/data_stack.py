@@ -1,6 +1,6 @@
 """Stateful resources shared by ingest, the agent tools and the reservation run."""
 
-from aws_cdk import RemovalPolicy, SecretValue, Stack
+from aws_cdk import CfnOutput, RemovalPolicy, SecretValue, Stack
 from aws_cdk import aws_dynamodb as ddb
 from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_secretsmanager as sm
@@ -69,3 +69,8 @@ class DataStack(Stack):
             secret_string_value=SecretValue.unsafe_plain_text("{}"),
             removal_policy=RemovalPolicy.RETAIN,
         )
+
+        CfnOutput(self, "CatalogBucketName", value=self.catalog_bucket.bucket_name)
+        CfnOutput(self, "SessionsTableName", value=self.sessions_table.table_name)
+        CfnOutput(self, "PlansTableName", value=self.plans_table.table_name)
+        CfnOutput(self, "TokenSecretArn", value=self.token_secret.secret_arn)

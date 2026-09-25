@@ -5,13 +5,15 @@ description = "Agentic re:Invent planner: schedule optimizer, catalog RAG and ve
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "anthropic[bedrock]>=1.0",
+  "boto3>=1.40",
   "httpx>=0.27",
   "pydantic>=2.7",
   "typer>=0.12",
 ]
 
 [project.optional-dependencies]
-aws = ["boto3>=1.35"]
+ui = ["streamlit>=1.40"]
 
 [project.scripts]
 reinvent-agent = "reinvent_agent.cli:app"
@@ -20,7 +22,6 @@ reinvent-agent = "reinvent_agent.cli:app"
 dev = [
   "pytest>=8",
   "ruff>=0.6",
-  "boto3>=1.35",
   "moto[secretsmanager]>=5",
 ]
 infra = [

@@ -42,3 +42,30 @@ def test_tables(template):
 
 def test_token_secret(template):
     template.resource_count_is("AWS::SecretsManager::Secret", 1)
+
+
+def test_search_stack_vector_index():
+    from stacks.search_stack import SearchStack
+
+    t = Template.from_stack(SearchStack(App(), "TestSearch"))
+    t.resource_count_is("AWS::S3Vectors::VectorBucket", 1)
+    t.has_resource_properties(
+        "AWS::S3Vectors::Index",
+        {
+            "Dimension": 1024,
+            "DistanceMetric": "cosine",
+            "DataType": "float32",
+            "MetadataConfiguration": {
+                "NonFilterableMetadataKeys": ["title", "snippet", "room", "speakers"]
+            },
+        },
+    )
+
+
+def test_index_config_matches_application():
+    from stacks.search_stack import DIMENSION, NON_FILTERABLE_KEYS
+
+    from reinvent_agent.catalog.documents import NON_FILTERABLE_KEYS as APP_KEYS
+    from reinvent_agent.catalog.embeddings import DIMENSION as APP_DIM
+
+    assert (DIMENSION, NON_FILTERABLE_KEYS) == (APP_DIM, APP_KEYS)
