@@ -32,6 +32,7 @@ def test_document_metadata_is_s3_vectors_safe(sessions):
     docs = build_documents(sessions, EVENT)
     for d in docs:
         assert None not in d.metadata.values()
+        assert [] not in d.metadata.values()  # S3 Vectors: "Empty arrays are not allowed"
         filterable = {
             k: v for k, v in d.metadata.items() if k not in ("title", "snippet", "room", "speakers")
         }
@@ -51,6 +52,7 @@ def test_unscheduled_session_has_no_time_metadata():
     d = to_document(Session(sessionId="x", title="TBD"), EVENT)
     assert "day" not in d.metadata and "startMin" not in d.metadata
     assert d.metadata["venue"] == "unknown" and "levelNum" not in d.metadata
+    assert not {"services", "topics", "tracks"} & d.metadata.keys()
 
 
 def test_search_ranks_and_filters(search):
@@ -80,6 +82,7 @@ def test_search_ranks_and_filters(search):
 def test_summary_formats_times(search):
     r = search.search("EventBridge Pipes", SearchFilters(), k=1)[0].summary()
     assert (r["code"], r["start"], r["end"], r["day"]) == ("SVS401", "09:00", "10:00", "2026-12-01")
+    assert r["weekday"] == "Tuesday"
 
 
 @pytest.mark.parametrize(

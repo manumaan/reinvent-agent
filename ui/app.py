@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import json
 import threading
-from pathlib import Path
+import time
 
 import streamlit as st
 
+from reinvent_agent.catalog import source
 from reinvent_agent.config import settings
 from reinvent_agent.events_api import EventsApiClient, FileTokenStore, Session, TokenProvider
 from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
-
-CATALOG_FILE = Path("fixtures/reinvent2026/catalog.jsonl")
+from reinvent_agent.llm import get_provider
+from reinvent_agent.schedule import MySchedule
 
 st.set_page_config(page_title="re:Invent planner", page_icon="🗓️", layout="wide")
 cfg = settings()
@@ -30,10 +31,31 @@ store = FileTokenStore()
 
 def _login_worker(state: dict) -> None:
     try:
-        interactive_login(store, timeout=300, open_browser=True)
+        interactive_login(
+            store, timeout=300, open_browser=True, on_url=lambda u: state.update(url=u)
+        )
         state["status"] = "done"
     except Exception as e:  # surfaced in the sidebar
         state["status"] = f"error: {e}"
+
+
+@st.fragment(run_every=2)
+def _login_pending() -> None:
+    """Polls the background sign-in and reruns the whole app once it finishes."""
+    login = st.session_state["login"]
+    if login["status"] != "running":
+        st.rerun(scope="app")
+    st.info("Finish signing in in the browser tab that just opened…")
+    if url := login.get("url"):
+        st.link_button("Open the sign-in page", url)
+
+
+def model_caption() -> None:
+    llm = get_provider(cfg.llm_provider)
+    st.sidebar.divider()
+    st.sidebar.caption(
+        f"Answers: {llm.label}, `{cfg.model}`. Switch with `reinvent-agent config set-provider`."
+    )
 
 
 def sidebar() -> bool:
@@ -42,25 +64,29 @@ def sidebar() -> bool:
     tokens = store.load()
 
     if login["status"] == "running":
-        st.sidebar.info("Finish signing in in the browser tab that just opened…")
-        if st.sidebar.button("Check again"):
-            st.rerun()
+        with st.sidebar:
+            _login_pending()
     elif login["status"].startswith("error"):
         st.sidebar.error(login["status"])
         login["status"] = "idle"
 
     if tokens is None:
-        st.sidebar.write("Not signed in.")
+        st.sidebar.write(
+            "Not signed in. Sign in with the AWS Builder ID you registered for re:Invent "
+            "to load the full catalog and your schedule."
+        )
         if login["status"] != "running" and st.sidebar.button(
             "Sign in with AWS Builder ID", type="primary"
         ):
-            login["status"] = "running"
+            login.update(status="running", url=None)
             threading.Thread(target=_login_worker, args=(login,), daemon=True).start()
             st.rerun()
         return False
 
+    just_signed_in = login["status"] == "done"
     login["status"] = "idle"
     st.sidebar.success("Signed in")
+    schedule_status(refresh=just_signed_in)
     if cfg.token_secret_arn and st.sidebar.button("Enable unattended reservations"):
         import boto3
 
@@ -75,12 +101,28 @@ def sidebar() -> bool:
         except AuthError as e:
             st.sidebar.warning(str(e))
         store.clear()
+        my_schedule().path.unlink(missing_ok=True)
         st.rerun()
     st.sidebar.caption(
         "Signing out here does not end your Builder ID browser session; "
         "use profile.aws.amazon.com for that."
     )
     return True
+
+
+def schedule_status(refresh: bool) -> None:
+    """Sync GetSchedule into the local snapshot (on sign-in, when stale, or on demand)."""
+    sched = my_schedule()
+    manual = st.sidebar.button("Refresh my schedule")
+    try:
+        data = sched.load(refresh=refresh or manual)
+    except Exception as e:
+        return st.sidebar.warning(f"Could not load your schedule: {e}")
+    when = time.strftime("%H:%M", time.localtime(sched.fetched_at() or time.time()))
+    st.sidebar.caption(
+        f"Schedule synced {when}: {len(data.favorites)} favorites, "
+        f"{len(data.reserved)} reserved, {len(data.personal_time)} personal time."
+    )
 
 
 # --- backends -----------------------------------------------------------------
@@ -98,6 +140,17 @@ def search_backend():
     return CatalogSearch(store_, BedrockTitanEmbedder(region=cfg.region))
 
 
+def events_client() -> EventsApiClient | None:
+    return EventsApiClient(TokenProvider(store)) if store.load() else None
+
+
+@st.cache_resource
+def my_schedule() -> MySchedule:
+    return MySchedule.with_inferred_venues(
+        cfg.event_id, events_client, list(local_catalog().values())
+    )
+
+
 @st.cache_resource
 def qa_backend():
     from reinvent_agent.qa import CatalogQA, make_client
@@ -106,14 +159,15 @@ def qa_backend():
     if search is None:
         return None
     client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
-    return CatalogQA(search, client, cfg.model, cfg.event_id)
+    return CatalogQA(search, client, cfg.model, cfg.event_id, schedule=my_schedule())
 
 
 @st.cache_data
 def local_catalog() -> dict[str, Session]:
-    if not CATALOG_FILE.exists():
+    try:
+        sessions = source.load_sessions(source.resolve(None, cfg.event_id, cfg.catalog_bucket))
+    except Exception:  # no catalog yet
         return {}
-    sessions = [Session.model_validate_json(x) for x in CATALOG_FILE.open() if x.strip()]
     return {s.session_id: s for s in sessions}
 
 
@@ -140,7 +194,10 @@ def ask_tab():
         with st.chat_message("user"):
             st.markdown(question)
         with st.chat_message("assistant"), st.spinner("Searching the catalog…"):
-            answer = qa.ask(question, history=[dict(m) for m in history])
+            try:
+                answer = qa.ask(question, history=[dict(m) for m in history])
+            except Exception as e:  # e.g. model not enabled for the account
+                return st.error(f"Claude call failed ({cfg.llm_provider}): {e}")
             st.markdown(answer.text)
             if answer.cited:
                 with st.expander(f"{len(answer.cited)} cited sessions"):
@@ -177,35 +234,110 @@ def search_tab():
         st.dataframe(rows, hide_index=True, use_container_width=True)
 
 
+def index_catalog(sessions: list[Session], bar) -> None:
+    """Embed into S3 Vectors (Bedrock Titan) and upsert the DynamoDB sessions table."""
+    import boto3
+
+    from reinvent_agent.catalog.embeddings import BedrockTitanEmbedder
+    from reinvent_agent.catalog.ingest import ingest
+    from reinvent_agent.catalog.vector_store import S3VectorsStore
+
+    table = (
+        boto3.resource("dynamodb", region_name=cfg.region).Table(cfg.sessions_table)
+        if cfg.sessions_table
+        else None
+    )
+    bar.progress(0.0, text="Embedding and indexing…")
+    report = ingest(
+        sessions,
+        cfg.event_id,
+        S3VectorsStore(cfg.vector_bucket, cfg.vector_index, region=cfg.region),
+        BedrockTitanEmbedder(region=cfg.region),
+        table=table,
+        progress=lambda d, t: bar.progress(d / t, text=f"Indexed {d}/{t}…"),
+    )
+    st.success(f"Indexed {report.indexed} sessions for search and Q&A.")
+
+
+def refresh_catalog(do_index: bool) -> None:
+    """Events API -> local JSONL -> catalog bucket -> (optionally) vectors + DynamoDB."""
+    bar = st.progress(0.0, text="Downloading sessions…")
+
+    def on_page(n, total):
+        bar.progress(min(n / total, 1.0) if total else 0.0, text=f"Downloaded {n} sessions…")
+
+    client = EventsApiClient(TokenProvider(store))
+    items, total = source.download_catalog(client, cfg.event_id, progress=on_page)
+    body = source.to_jsonl(items)
+    path = source.local_path(cfg.event_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+    st.success(f"Downloaded {len(items)} sessions (API totalCount {total}) to `{path}`.")
+    if cfg.catalog_bucket:
+        st.success(f"Uploaded to `{source.upload(body, cfg.catalog_bucket, cfg.event_id)}`.")
+    local_catalog.clear()
+    my_schedule.clear()
+    qa_backend.clear()
+    if do_index and cfg.vector_bucket:
+        index_catalog([Session.model_validate(x) for x in items], bar)
+    bar.empty()
+
+
+def catalog_tab(signed_in: bool):
+    catalog = local_catalog()
+    where = source.resolve(None, cfg.event_id, cfg.catalog_bucket)
+    if catalog:
+        st.write(f"**{len(catalog)} sessions** loaded from `{where}`.")
+    else:
+        st.write("No catalog downloaded yet.")
+    if cfg.catalog_bucket:
+        st.caption(
+            f"Shared copy: `{source.s3_uri(cfg.catalog_bucket, cfg.event_id)}` "
+            "(what `reinvent-agent catalog index` reads when there is no local file)."
+        )
+    if catalog and cfg.vector_bucket and st.button("Index this catalog for search and Q&A"):
+        bar = st.progress(0.0)
+        try:
+            index_catalog(list(catalog.values()), bar)
+        except Exception as e:
+            st.error(f"Indexing failed: {e}")
+        bar.empty()
+    if not signed_in:
+        return st.info(
+            "The session catalog needs a re:Invent registration: sign in with AWS Builder ID "
+            "in the sidebar to download it."
+        )
+    do_index = st.checkbox(
+        "Also index for search and Q&A (Bedrock Titan embeddings)", value=bool(cfg.vector_bucket)
+    )
+    if st.button("Download full catalog from the AWS Events API", type="primary"):
+        try:
+            refresh_catalog(do_index)
+        except Exception as e:
+            st.error(f"Catalog refresh failed: {e}")
+
+
 def schedule_tab(signed_in: bool):
     if not signed_in:
         return st.info("Sign in to see your favorites, reservations and personal time.")
+    sched_ = my_schedule()
     try:
-        sched = EventsApiClient(TokenProvider(store)).get_schedule(cfg.event_id)
+        sched = sched_.load()
     except Exception as e:
         return st.error(f"Could not load your schedule: {e}")
-    catalog = local_catalog()
 
     def rows(ids):
-        out = []
-        for sid in ids:
-            s = catalog.get(sid)
-            out.append(
-                {
-                    "code": s.code if s else sid,
-                    "title": s.title if s else "(not in local catalog)",
-                    "day": s.day.isoformat() if s and s.day else None,
-                    "start": s.start.strftime("%H:%M") if s and s.start else None,
-                    "venue": s.venue if s else None,
-                    "level": s.level_number if s else None,
-                }
-            )
+        out = [sched_.describe(sid) for sid in ids]
+        cols = ("code", "title", "weekday", "day", "start", "end", "venue", "level")
+        out = [{c: r.get(c) for c in cols} for r in out]
         return sorted(out, key=lambda r: (r["day"] or "9", r["start"] or ""))
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Reserved", len(sched.reserved))
     c2.metric("Favorites", len(sched.favorites))
     c3.metric("Personal time", len(sched.personal_time))
+    with st.expander("One venue per day plan (favorites + reserved)"):
+        venue_plan(sched_, sched)
     st.subheader("Reserved")
     st.dataframe(rows(sched.reserved), hide_index=True, use_container_width=True)
     st.subheader("Favorites")
@@ -217,12 +349,37 @@ def schedule_tab(signed_in: bool):
         )
 
 
+def venue_plan(sched_: MySchedule, sched) -> None:
+    from reinvent_agent.planner import plan_one_venue_per_day
+
+    ids = list(dict.fromkeys(sched.favorites + sched.reserved))
+    plan = plan_one_venue_per_day(sched_.sessions(ids), sched_.venue_of, sched.reserved)
+    st.write(plan.summary)
+    for d in plan.days:
+        left = "" if d.all_fit else f", {len(d.not_scheduled)} left out"
+        st.markdown(f"**{d.weekday} {d.day} · {d.venue}** ({len(d.sessions)} sessions{left})")
+        timeline = [
+            {"start": x.start, "end": x.end, "session": f"{x.code} {x.title}"} for x in d.sessions
+        ] + [{"start": g.start, "end": g.end, "session": "— free —"} for g in d.free_slots]
+        st.dataframe(sorted(timeline, key=lambda r: r["start"]), hide_index=True)
+        if d.not_scheduled:
+            st.caption(
+                "Left out: "
+                + "; ".join(f"{x['code']} ({x['venue']}, {x['reason']})" for x in d.not_scheduled)
+            )
+    if plan.unplaceable:
+        st.caption("Not plannable: " + ", ".join(x["code"] for x in plan.unplaceable))
+
+
 signed_in = sidebar()
+model_caption()
 st.title("re:Invent 2026 planner")
-tab_ask, tab_search, tab_sched = st.tabs(["Ask", "Search", "My schedule"])
+tab_ask, tab_search, tab_sched, tab_cat = st.tabs(["Ask", "Search", "My schedule", "Catalog"])
 with tab_ask:
     ask_tab()
 with tab_search:
     search_tab()
 with tab_sched:
     schedule_tab(signed_in)
+with tab_cat:
+    catalog_tab(signed_in)

@@ -25,6 +25,7 @@ import secrets
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -298,7 +299,14 @@ def _wait_for_callback(
     return result["code"]
 
 
-def interactive_login(store: TokenStore, timeout: float = 300, open_browser: bool = True) -> Tokens:
+def interactive_login(
+    store: TokenStore,
+    timeout: float = 300,
+    open_browser: bool = True,
+    on_url: Callable[[str], None] | None = None,
+) -> Tokens:
+    """Browser sign-in via a localhost callback. ``on_url`` receives the sign-in URL
+    (e.g. so a UI can show it as a link in case the browser didn't open)."""
     verifier = new_code_verifier()
     state = secrets.token_urlsafe(24)
     server = bind_callback_server(_CallbackHandler)
@@ -306,6 +314,8 @@ def interactive_login(store: TokenStore, timeout: float = 300, open_browser: boo
     port = server.server_address[1]
     url = authorization_url(code_challenge(verifier), state, port)
     print(f"Opening browser for AWS Builder ID sign-in:\n  {url}\n")
+    if on_url:
+        on_url(url)
     if open_browser:
         webbrowser.open(url)
     code = _wait_for_callback(server, server.result, state, timeout)

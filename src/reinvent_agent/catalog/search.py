@@ -64,6 +64,7 @@ class SearchResult:
             "type": m.get("type"),
             "level": m.get("levelNum"),
             "day": m.get("day"),
+            "weekday": _weekday(m.get("day")),  # so the model never computes it
             "start": _hhmm(m.get("startMin")),
             "end": _hhmm(m.get("endMin")),
             "venue": m.get("venue"),
@@ -73,6 +74,12 @@ class SearchResult:
             "snippet": m.get("snippet"),
             "score": round(self.score, 3),
         }
+
+
+def _weekday(day: str | None) -> str | None:
+    from datetime import date
+
+    return date.fromisoformat(day).strftime("%A") if day else None
 
 
 def _hhmm(minutes: int | None) -> str | None:

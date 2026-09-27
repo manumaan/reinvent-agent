@@ -68,3 +68,42 @@ def test_haiku_runs_without_thinking():
     client = FakeClient({"query": "serverless"})
     CatalogQA(_search(), client, "anthropic.claude-haiku-4-5").ask("serverless?")
     assert "thinking" not in client.kwargs
+
+
+class ScheduleClient:
+    def get_schedule(self, event_id):
+        from reinvent_agent.events_api.models import Schedule
+
+        return Schedule(favorites=["SVS401", "SVS310", "ANT305", "SVS320"], reserved=[])
+
+
+def test_schedule_tools_plan_from_favorites(tmp_path):
+    from reinvent_agent.schedule import MySchedule
+
+    items = load("sessions_page1.json")["items"] + load("sessions_page2.json")["items"]
+    ms = MySchedule.with_inferred_venues(
+        "reinvent2026",
+        ScheduleClient,
+        [Session.model_validate(x) for x in items],
+        path=tmp_path / "s.json",
+    )
+    seen = {}
+    tools = {t.name: t for t in CatalogQA(_search(), None, "m", schedule=ms)._tools(seen)}
+    assert set(tools) == {"catalog_search", "get_my_schedule", "plan_one_venue_per_day"}
+    mine = json.loads(tools["get_my_schedule"].call({}))
+    assert [f["code"] for f in mine["favorites"]] == ["SVS401", "SVS310", "ANT305", "SVS320"]
+    plan = json.loads(tools["plan_one_venue_per_day"].call({}))
+    [day] = plan["days"]
+    assert day["venue"] == "Venetian"
+    assert [x["code"] for x in day["sessions"]] == ["SVS401", "SVS310", "SVS320"]
+    assert day["not_scheduled"][0]["code"] == "ANT305"
+    assert "SVS401" in seen
+
+
+def test_schedule_tools_when_signed_out(tmp_path):
+    from reinvent_agent.schedule import MySchedule
+
+    ms = MySchedule("reinvent2026", lambda: None, {}, path=tmp_path / "s.json")
+    tools = {t.name: t for t in CatalogQA(_search(), None, "m", schedule=ms)._tools({})}
+    assert tools["get_my_schedule"].call({}).startswith("Not signed in")
+    assert tools["plan_one_venue_per_day"].call({}).startswith("Not signed in")

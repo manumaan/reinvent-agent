@@ -53,16 +53,22 @@ def to_document(s: Session, event_id: str, inferrer: VenueInferrer | None = None
         "venue": venue or "unknown",
         "venueSource": venue_source,
         "reservable": s.is_reservable,
-        "services": s.services[:_MAX_LIST],
-        "topics": (s.topics + s.areas_of_interest)[:_MAX_LIST],
-        "tracks": s.tracks[:_MAX_LIST],
         # non-filterable display fields
         "title": s.title,
         "snippet": (s.abstract or "")[:SNIPPET_CHARS],
         "room": s.room or "",
         "speakers": "; ".join(s.speaker_names)[:500],
     }
-    # S3 Vectors rejects null metadata values, so only set what we have. A missing
+    # S3 Vectors rejects null values and empty arrays in metadata, so only set what we
+    # have. A missing list key simply never matches a `$in` filter.
+    for key, values in (
+        ("services", s.services),
+        ("topics", s.topics + s.areas_of_interest),
+        ("tracks", s.tracks),
+    ):
+        if values:
+            meta[key] = values[:_MAX_LIST]
+    # Likewise for scalars. A missing
     # key also makes range filters fail, so unlevelled sessions never pass a level filter.
     if s.level_number is not None:
         meta["levelNum"] = s.level_number

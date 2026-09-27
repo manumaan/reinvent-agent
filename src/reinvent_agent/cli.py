@@ -8,7 +8,7 @@ from pathlib import Path
 
 import typer
 
-from reinvent_agent.events_api import EventsApiClient, FileTokenStore, Session, TokenProvider
+from reinvent_agent.events_api import EventsApiClient, FileTokenStore, TokenProvider
 from reinvent_agent.events_api.auth import (
     AuthError,
     SecretsManagerTokenStore,
@@ -67,6 +67,26 @@ def config_clear_api_key():
         SecretId=cfg.anthropic_key_secret_arn, SecretString=API_KEY_PLACEHOLDER
     )
     typer.echo("Cleared. Claude calls use Bedrock again.")
+
+
+@config_app.command("set-provider")
+def config_set_provider(
+    provider: str = typer.Argument(..., help="bedrock, anthropic, or auto"),
+    model: str | None = typer.Option(None, help="Bare model ID, e.g. claude-opus-4-7"),
+):
+    """Choose the Claude endpoint (saved locally; REINVENT_LLM_PROVIDER still wins).
+
+    `auto` uses the Claude API when an API key is stored, else Bedrock.
+    """
+    from reinvent_agent.config import load_preferences, save_preferences
+    from reinvent_agent.llm import get_provider
+
+    if provider != "auto":
+        get_provider(provider)
+    prefs = load_preferences() | {"provider": provider, "model": model}
+    path = save_preferences(prefs)
+    typer.echo(f"Saved to {path}.")
+    config_show()
 
 
 @config_app.command("show")
@@ -159,22 +179,43 @@ def catalog_events(include_past: bool = typer.Option(False, "--include-past")):
 @catalog_app.command("dump")
 def catalog_dump(
     event_id: str = typer.Option(DEFAULT_EVENT, "--event"),
-    out: Path = typer.Option(Path("catalog.jsonl"), "--out"),
-    no_abstracts: bool = False,
+    out: Path | None = typer.Option(None, "--out", help="Default: fixtures/<event>/catalog.jsonl"),
+    upload: bool = typer.Option(True, help="Also copy to the deployed catalog bucket"),
 ):
-    """Walk ListSessions and write one JSON session per line (API field names)."""
-    n, total = 0, None
-    with out.open("w") as f:
-        for page in _client().iter_session_pages(event_id, include_abstracts=not no_abstracts):
-            total = page.get("totalCount", total)
-            for raw in page["items"]:
-                s = Session.model_validate(raw)
-                f.write(json.dumps(s.model_dump(mode="json", by_alias=True, exclude_none=True)))
-                f.write("\n")
-                n += 1
-    typer.echo(f"Wrote {n} sessions to {out} (API totalCount: {total})")
-    if total is not None and n != total:
+    """Walk ListSessions (needs `auth login`) and write one JSON session per line."""
+    from reinvent_agent.catalog import source
+    from reinvent_agent.config import settings
+
+    items, total = source.download_catalog(_client(), event_id)
+    body = source.to_jsonl(items)
+    out = out or source.local_path(event_id)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(body)
+    typer.echo(f"Wrote {len(items)} sessions to {out} (API totalCount: {total})")
+    if total is not None and len(items) != total:
         typer.echo("WARNING: session count differs from totalCount; run `catalog probe`.")
+    bucket = settings().catalog_bucket
+    if upload and bucket:
+        typer.echo(f"Uploaded to {source.upload(body, bucket, event_id)}")
+
+
+@catalog_app.command("upload")
+def catalog_upload(
+    file: Path | None = typer.Argument(None, help="Default: fixtures/<event>/catalog.jsonl"),
+    event_id: str = typer.Option(DEFAULT_EVENT, "--event"),
+):
+    """Copy a local catalog JSONL to the deployed catalog bucket (validates it first)."""
+    from reinvent_agent.catalog import source
+    from reinvent_agent.config import settings
+
+    bucket = settings().catalog_bucket
+    if not bucket:
+        typer.echo("No catalog bucket found; deploy ReinventAgentData first.")
+        raise typer.Exit(1)
+    file = file or source.local_path(event_id)
+    sessions = source.load_sessions(file)
+    typer.echo(f"{len(sessions)} valid sessions in {file}")
+    typer.echo(f"Uploaded to {source.upload(file.read_text(), bucket, event_id)}")
 
 
 @catalog_app.command("probe")
@@ -217,15 +258,18 @@ def catalog_probe(
 
 @catalog_app.command("report")
 def catalog_report(
-    file: Path = typer.Option(Path("fixtures/reinvent2026/catalog.jsonl"), "--file"),
+    file: str | None = typer.Option(None, "--file", help="Local path or s3:// URI"),
+    event_id: str = typer.Option(DEFAULT_EVENT, "--event"),
     top: int = 15,
 ):
     """Field coverage and venue inference for a dumped catalog (no abstracts printed)."""
     from collections import Counter
 
+    from reinvent_agent.catalog import source
     from reinvent_agent.catalog.venues import VenueInferrer, room_tokens
+    from reinvent_agent.config import settings
 
-    sessions = [Session.model_validate_json(line) for line in file.open() if line.strip()]
+    sessions = source.load_sessions(source.resolve(file, event_id, settings().catalog_bucket))
     inferrer = VenueInferrer.learn(sessions)
     results = [(s, *inferrer.infer(s)) for s in sessions]
     typer.echo(f"{len(sessions)} sessions; learned {len(inferrer.token_venue)} room->venue keys")
@@ -241,10 +285,6 @@ def catalog_report(
         typer.echo(f"  {n:4d}  {key}")
     learned = Counter(v for _, v, src in results if src == "room-learned")
     typer.echo(f"inferred from learned room names, by venue: {dict(learned)}")
-
-
-def _load_catalog(file: Path) -> list[Session]:
-    return [Session.model_validate_json(line) for line in file.open() if line.strip()]
 
 
 def _search_backend():
@@ -270,20 +310,28 @@ def _require_deployed(cfg):
 
 @catalog_app.command("index")
 def catalog_index(
-    file: Path = typer.Option(Path("fixtures/reinvent2026/catalog.jsonl"), "--file"),
+    file: str | None = typer.Option(
+        None,
+        "--file",
+        help="Local path or s3:// URI. Default: fixtures/<event>/catalog.jsonl if present, "
+        "else the catalog bucket's catalog/<event>/catalog.jsonl",
+    ),
     event_id: str = typer.Option(DEFAULT_EVENT, "--event"),
     with_table: bool = typer.Option(True, help="Also upsert the DynamoDB sessions table"),
 ):
     """Embed a dumped catalog (Bedrock Titan v2) into S3 Vectors, and DynamoDB."""
     import boto3
 
+    from reinvent_agent.catalog import source
     from reinvent_agent.catalog.embeddings import BedrockTitanEmbedder
     from reinvent_agent.catalog.ingest import ingest
     from reinvent_agent.catalog.vector_store import S3VectorsStore
     from reinvent_agent.config import settings
 
-    cfg = settings()
-    sessions = _load_catalog(file)
+    cfg = _require_deployed(settings())
+    location = source.resolve(file, event_id, cfg.catalog_bucket)
+    typer.echo(f"Reading {location}")
+    sessions = source.load_sessions(location)
     table = None
     if with_table:
         if not cfg.sessions_table:
@@ -327,13 +375,13 @@ def catalog_search(
         )
 
 
-# Claude on Amazon Bedrock (Mantle client) IDs, most preferred first.
-CANDIDATE_MODELS = ["claude-opus-4-8", "claude-opus-4-7", "claude-haiku-4-5"]
-
-
 @app.command("check-models")
-def check_models():
-    """Probe the embedding model and which Claude models the configured provider can call."""
+def check_models(
+    provider: str | None = typer.Option(
+        None, help="Probe this endpoint instead of the configured one (bedrock, anthropic)"
+    ),
+):
+    """Probe the embedding model and which Claude models an endpoint can call."""
     import json
 
     import anthropic
@@ -341,7 +389,7 @@ def check_models():
 
     from reinvent_agent.catalog.embeddings import TITAN_V2
     from reinvent_agent.config import settings
-    from reinvent_agent.qa import make_client
+    from reinvent_agent.llm import get_provider, make_client
 
     cfg = settings()
     try:
@@ -351,13 +399,17 @@ def check_models():
         )
         typer.echo(f"OK    {TITAN_V2} (embeddings)")
     except Exception as e:
-        typer.echo(f"FAIL  {TITAN_V2}: {type(e).__name__}: {str(e)[:160]}")
+        typer.echo(f"FAIL  {TITAN_V2}: {type(e).__name__}: {e}")
 
-    client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
-    typer.echo(f"Claude provider: {cfg.llm_provider}")
-    prefix = "anthropic." if cfg.llm_provider == "bedrock" else ""
+    llm = get_provider(provider or cfg.llm_provider)
+    typer.echo(f"Claude provider: {llm.name} ({llm.label})")
+    try:
+        client = make_client(cfg.region, llm.name, cfg.anthropic_key_secret_arn)
+    except RuntimeError as e:
+        typer.echo(f"FAIL  {e}")
+        raise typer.Exit(1) from None
     working = []
-    for model in (prefix + m for m in CANDIDATE_MODELS):
+    for model in map(llm.model_id, llm.candidates):
         try:
             client.messages.create(
                 model=model, max_tokens=64, messages=[{"role": "user", "content": "Say OK."}]
@@ -365,29 +417,50 @@ def check_models():
             working.append(model)
             typer.echo(f"OK    {model}")
         except anthropic.APIStatusError as e:
-            typer.echo(f"FAIL  {model}: {e.status_code} {str(e.message)[:160]}")
+            detail = e.body.get("error", {}).get("message") if isinstance(e.body, dict) else None
+            typer.echo(f"FAIL  {model}: {e.status_code} {detail or e.message}")
         except anthropic.APIConnectionError as e:
             typer.echo(f"FAIL  {model}: connection error {e}")
-    typer.echo(f"\ncurrent REINVENT_MODEL: {cfg.model}")
-    if working and cfg.model not in working:
-        typer.echo(f"Use:  export REINVENT_MODEL={working[0]}")
+    typer.echo(f"\nin use: {cfg.llm_provider} / {cfg.model}")
+    if working and llm.name != cfg.llm_provider:
+        bare = working[0].removeprefix(llm.model_prefix)
+        typer.echo(f"Switch with:  reinvent-agent config set-provider {llm.name} --model {bare}")
+    elif working and cfg.model not in working:
+        bare = working[0].removeprefix(llm.model_prefix)
+        typer.echo(f"Use:  reinvent-agent config set-provider {llm.name} --model {bare}")
     elif not working:
         hint = (
-            f"Enable one under Bedrock console -> Model access in {cfg.region}"
-            if cfg.llm_provider == "bedrock"
-            else "Check ANTHROPIC_API_KEY and your Claude Console billing"
+            f"Request Claude access for this account in Bedrock ({cfg.region})"
+            if llm.name == "bedrock"
+            else "Check the API key (`config set-api-key`) and your Claude Console billing"
         )
         typer.echo(f"No Claude model answered. {hint}, then re-run.")
+
+
+def _my_schedule(cfg):
+    from reinvent_agent.catalog import source
+    from reinvent_agent.schedule import MySchedule
+
+    try:
+        sessions = source.load_sessions(source.resolve(None, cfg.event_id, cfg.catalog_bucket))
+    except Exception:  # no catalog yet: schedule tools fall back to GetSession
+        sessions = []
+    signed_in = FileTokenStore().load() is not None
+    return MySchedule.with_inferred_venues(
+        cfg.event_id, lambda: _client() if signed_in else None, sessions
+    )
 
 
 @app.command("ask")
 def ask(question: str):
     """Ask a question about the catalog; answers cite session codes."""
-    from reinvent_agent.qa import CatalogQA, make_client
+    from reinvent_agent.llm import make_client
+    from reinvent_agent.qa import CatalogQA
 
     cfg, search = _search_backend()
     client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
-    answer = CatalogQA(search, client, cfg.model, cfg.event_id).ask(question)
+    qa = CatalogQA(search, client, cfg.model, cfg.event_id, schedule=_my_schedule(cfg))
+    answer = qa.ask(question)
     typer.echo(answer.text)
 
 

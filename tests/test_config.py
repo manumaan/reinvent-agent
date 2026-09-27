@@ -99,3 +99,37 @@ def test_secret_key_selects_claude_api(monkeypatch):
         assert "sk-ant" not in repr(cfg)
     finally:
         config.settings.cache_clear()
+
+
+def test_saved_provider_and_model(monkeypatch):
+    monkeypatch.setenv("REINVENT_VECTOR_BUCKET", "vb")
+    monkeypatch.setenv("REINVENT_SESSIONS_TABLE", "tbl")
+    monkeypatch.setenv("REINVENT_ANTHROPIC_KEY_SECRET_ID", "arn:key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")  # auto would pick the Claude API
+    monkeypatch.delenv("REINVENT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("REINVENT_MODEL", raising=False)
+    try:
+        config.save_preferences({"provider": "bedrock", "model": "claude-opus-4-7"})
+        cfg = config.settings()
+        assert (cfg.llm_provider, cfg.model) == ("bedrock", "anthropic.claude-opus-4-7")
+        config.save_preferences({"provider": "anthropic"})
+        assert config.settings().model == "claude-opus-4-8"
+        monkeypatch.setenv("REINVENT_LLM_PROVIDER", "bedrock")  # env still wins
+        config.settings.cache_clear()
+        assert config.settings().llm_provider == "bedrock"
+        config.save_preferences({"provider": "auto"})
+        monkeypatch.delenv("REINVENT_LLM_PROVIDER")
+        assert config.settings().llm_provider == "anthropic"
+    finally:
+        config.settings.cache_clear()
+
+
+def test_provider_model_ids():
+    from reinvent_agent.llm import get_provider
+
+    assert get_provider("bedrock").model_id("claude-haiku-4-5") == "anthropic.claude-haiku-4-5"
+    assert get_provider("anthropic").model_id("anthropic.claude-opus-4-8") == "claude-opus-4-8"
+    import pytest
+
+    with pytest.raises(ValueError):
+        get_provider("openai")

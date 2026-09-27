@@ -1,6 +1,6 @@
 """Conversational Q&A over the session catalog.
 
-Claude on Amazon Bedrock drives a small tool loop (SDK tool runner) with one tool,
+Claude (see ``llm`` for the endpoint) drives a small tool loop (SDK tool runner) with one tool,
 ``catalog_search``, and must cite session codes from what the tool returned.
 """
 
@@ -10,6 +10,8 @@ import json
 from dataclasses import dataclass, field
 
 from reinvent_agent.catalog.search import CatalogSearch, SearchFilters
+from reinvent_agent.llm import make_client  # noqa: F401  (re-exported for callers)
+from reinvent_agent.schedule import MySchedule, NotSignedIn
 
 SYSTEM_PROMPT = """\
 You help an attendee explore the AWS re:Invent {year} session catalog ({event_id}, \
@@ -23,7 +25,15 @@ introductory; 300 advanced; 400/500 expert.
 In your answer, cite each session by its code in square brackets, e.g. [SVS401], with \
 its title, type, level, day, time and venue when known. If nothing relevant turns up, \
 say so plainly instead of stretching. Keep answers compact: a short lead sentence, then \
-the sessions grouped sensibly."""
+the sessions grouped sensibly.
+
+The attendee's own favorites, reservations and personal time come from get_my_schedule \
+(live from the AWS Events API). For any plan or itinerary built from their sessions, \
+call plan_one_venue_per_day (or get_my_schedule for other layouts) rather than working \
+out overlaps yourself, and present its result day by day: the venue, the sessions in \
+time order, the free slots, and what could not fit and why. Use the weekday and times \
+exactly as the tools give them. If a tool says the attendee is not signed in, tell them \
+to sign in with AWS Builder ID in the app sidebar (or `reinvent-agent auth login`)."""
 
 
 @dataclass
@@ -38,30 +48,17 @@ def thinking_config(model: str) -> dict | None:
     return None if "haiku" in model else {"type": "adaptive"}
 
 
-def make_client(region: str, provider: str = "bedrock", key_secret_id: str | None = None):
-    """Claude via Amazon Bedrock (AWS credentials) or the Claude API (API key from
-    ANTHROPIC_API_KEY or the AnthropicApiKey secret). Both expose the same Messages
-    API surface, including the tool runner."""
-    if provider == "anthropic":
-        from anthropic import Anthropic
-
-        from reinvent_agent.config import anthropic_api_key
-
-        key = anthropic_api_key(key_secret_id, region)
-        if not key:
-            raise RuntimeError(
-                "No Claude API key: set ANTHROPIC_API_KEY or run "
-                "`reinvent-agent config set-api-key`."
-            )
-        return Anthropic(api_key=key)
-    from anthropic import AnthropicBedrockMantle
-
-    return AnthropicBedrockMantle(aws_region=region)
-
-
 class CatalogQA:
-    def __init__(self, search: CatalogSearch, client, model: str, event_id: str = "reinvent2026"):
+    def __init__(
+        self,
+        search: CatalogSearch,
+        client,
+        model: str,
+        event_id: str = "reinvent2026",
+        schedule: MySchedule | None = None,
+    ):
         self.search, self.client, self.model, self.event_id = search, client, model, event_id
+        self.schedule = schedule
 
     def _tools(self, seen: dict[str, dict]):
         from anthropic import beta_tool
@@ -106,7 +103,84 @@ class CatalogQA:
                 seen[r["sessionId"]] = r
             return json.dumps(results) if results else "No matching sessions."
 
-        return [catalog_search]
+        if self.schedule is None:
+            return [catalog_search]
+        schedule = self.schedule
+
+        def cite(rows: list[dict]) -> None:
+            for r in rows:
+                if r.get("code"):
+                    seen[r["sessionId"]] = r
+
+        @beta_tool
+        def get_my_schedule(refresh: bool = False) -> str:
+            """The attendee's favorited and reserved sessions (with day, time, venue) and
+            personal time, from the AWS Events API.
+
+            Args:
+                refresh: Re-read from the API instead of the recent snapshot, e.g. after
+                    the attendee says they just changed their favorites.
+            """
+            try:
+                sched = schedule.load(refresh=refresh)
+            except NotSignedIn:
+                return "Not signed in: the attendee must sign in with AWS Builder ID first."
+            favorites = [schedule.describe(i) for i in sched.favorites]
+            reserved = [schedule.describe(i) for i in sched.reserved]
+            cite(favorites + reserved)
+            key = lambda r: (r.get("day") or "9", r.get("start") or "")  # noqa: E731
+            return json.dumps(
+                {
+                    "favorites": sorted(favorites, key=key),
+                    "reserved": sorted(reserved, key=key),
+                    "personalTime": [
+                        json.loads(p.model_dump_json(by_alias=True)) for p in sched.personal_time
+                    ],
+                }
+            )
+
+        @beta_tool
+        def plan_one_venue_per_day(
+            include_favorites: bool = True,
+            include_reserved: bool = True,
+            day_start: str = "08:00",
+            day_end: str = "18:00",
+        ) -> str:
+            """Build a plan from the attendee's own sessions that stays at ONE venue each
+            day. Per day it picks the venue where the most non-overlapping sessions fit
+            (reserved sessions take priority), lists what could not fit (other venue or
+            time overlap), and the free slots between sessions. `feasible` is true only
+            if every session fits.
+
+            Args:
+                include_favorites: Plan over favorited sessions.
+                include_reserved: Also plan over reserved sessions (kept first).
+                day_start: Start of the day window for free slots, HH:MM.
+                day_end: End of the day window for free slots, HH:MM.
+            """
+            from datetime import time as dtime
+
+            from reinvent_agent.planner import plan_one_venue_per_day as plan
+
+            try:
+                sched = schedule.load()
+            except NotSignedIn:
+                return "Not signed in: the attendee must sign in with AWS Builder ID first."
+            ids = (sched.favorites if include_favorites else []) + (
+                sched.reserved if include_reserved else []
+            )
+            result = plan(
+                schedule.sessions(list(dict.fromkeys(ids))),
+                schedule.venue_of,
+                reserved=sched.reserved if include_reserved else (),
+                day_start=dtime.fromisoformat(day_start),
+                day_end=dtime.fromisoformat(day_end),
+            )
+            for d in result.days:
+                cite([schedule.describe(x.session_id) for x in d.sessions])
+            return json.dumps(result.to_dict())
+
+        return [catalog_search, get_my_schedule, plan_one_venue_per_day]
 
     def ask(self, question: str, history: list[dict] | None = None) -> Answer:
         seen: dict[str, dict] = {}

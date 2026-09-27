@@ -7,29 +7,54 @@ deployed CloudFormation stacks' outputs (``ReinventAgentData``,
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
+
+from reinvent_agent.llm import PROVIDERS, get_provider
 
 REGION = "us-east-1"
 STACKS = ("ReinventAgentData", "ReinventAgentSearch")
-# Claude Opus 5 / Sonnet 5 are not used (2026-09-27). Bedrock IDs carry an
-# `anthropic.` prefix; the Claude API (Anthropic API key) uses bare IDs.
 API_KEY_PLACEHOLDER = "UNSET"  # initial value of the AnthropicApiKey secret
-DEFAULT_MODELS = {"bedrock": "anthropic.claude-opus-4-8", "anthropic": "claude-opus-4-8"}
+DEFAULT_MODELS = {name: p.model_id(p.default_model) for name, p in PROVIDERS.items()}
+
+
+def preferences_path() -> Path:
+    base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "reinvent-agent" / "settings.json"
+
+
+def load_preferences() -> dict:
+    """Choices saved by `config set-provider` ({"provider": ..., "model": ...})."""
+    try:
+        return json.loads(preferences_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_preferences(prefs: dict) -> Path:
+    path = preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    clean = {k: v for k, v in prefs.items() if v}
+    path.write_text(json.dumps(clean, indent=2) + "\n")
+    settings.cache_clear()
+    return path
 
 
 @dataclass(frozen=True)
 class Settings:
     region: str
     event_id: str
+    catalog_bucket: str | None
     vector_bucket: str | None
     vector_index: str
     sessions_table: str | None
     token_secret_arn: str | None
     anthropic_key_secret_arn: str | None
-    # "bedrock" (Claude on Amazon Bedrock, AWS credentials) or "anthropic" (Claude API,
-    # ANTHROPIC_API_KEY). Embeddings always use Bedrock Titan.
+    # A key of llm.PROVIDERS: "bedrock" (Claude on Amazon Bedrock, AWS credentials) or
+    # "anthropic" (Claude API key). Embeddings always use Bedrock Titan.
     llm_provider: str
     model: str
 
@@ -94,19 +119,22 @@ def settings() -> Settings:
     )
     outputs = {} if all(env(k) for k in explicit) else stack_outputs(region)
     key_secret = env("REINVENT_ANTHROPIC_KEY_SECRET_ID") or outputs.get("AnthropicApiKeySecretArn")
-    provider = env("REINVENT_LLM_PROVIDER") or (
-        "anthropic" if anthropic_api_key(key_secret, region) else "bedrock"
-    )
-    if provider not in DEFAULT_MODELS:
-        raise ValueError(f"REINVENT_LLM_PROVIDER must be one of {sorted(DEFAULT_MODELS)}")
+    prefs = load_preferences()
+    # Precedence: env var, then `config set-provider`, then auto (API key present?).
+    provider = env("REINVENT_LLM_PROVIDER") or prefs.get("provider") or "auto"
+    if provider == "auto":
+        provider = "anthropic" if anthropic_api_key(key_secret, region) else "bedrock"
+    llm = get_provider(provider)
+    saved_model = prefs.get("model") if prefs.get("provider") == provider else None
     return Settings(
         region=region,
         event_id=env("REINVENT_EVENT_ID", "reinvent2026"),
+        catalog_bucket=env("REINVENT_CATALOG_BUCKET") or outputs.get("CatalogBucketName"),
         vector_bucket=env("REINVENT_VECTOR_BUCKET") or outputs.get("VectorBucketName"),
         vector_index=env("REINVENT_VECTOR_INDEX") or outputs.get("VectorIndexName", "sessions"),
         sessions_table=env("REINVENT_SESSIONS_TABLE") or outputs.get("SessionsTableName"),
         token_secret_arn=env("REINVENT_TOKEN_SECRET_ID") or outputs.get("TokenSecretArn"),
         anthropic_key_secret_arn=key_secret,
         llm_provider=provider,
-        model=env("REINVENT_MODEL", DEFAULT_MODELS[provider]),
+        model=env("REINVENT_MODEL") or llm.model_id(saved_model or llm.default_model),
     )

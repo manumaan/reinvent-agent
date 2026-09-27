@@ -22,6 +22,17 @@ def test_renders_signed_out_without_deployment(app):
     at = app.run()
     assert not at.exception
     assert at.title[0].value == "re:Invent 2026 planner"
-    assert [t.label for t in at.tabs] == ["Ask", "Search", "My schedule"]
+    assert [t.label for t in at.tabs] == ["Ask", "Search", "My schedule", "Catalog"]
     assert any(b.label == "Sign in with AWS Builder ID" for b in at.sidebar.button)
     assert any("isn't deployed yet" in w.value for w in at.warning)
+
+
+def test_pending_sign_in_shows_link_then_clears(app):
+    app.session_state["login"] = {"status": "running", "url": "https://example.test/signin"}
+    at = app.run()
+    assert not at.exception
+    assert any("Finish signing in" in i.value for i in at.sidebar.info)
+    at.session_state["login"]["status"] = "done"  # what the sign-in thread does
+    at = at.run()
+    assert not at.exception
+    assert not at.sidebar.info

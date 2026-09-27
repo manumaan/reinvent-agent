@@ -16,6 +16,12 @@ def load(name: str) -> dict:
     return json.loads(path.read_text())
 
 
+@pytest.fixture(autouse=True)
+def _isolated_user_config(monkeypatch, tmp_path_factory):
+    """Keep tests off the developer's ~/.config/reinvent-agent (tokens, saved provider)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg")))
+
+
 @pytest.fixture
 def token_store(tmp_path) -> FileTokenStore:
     store = FileTokenStore(tmp_path / "tokens.json")
