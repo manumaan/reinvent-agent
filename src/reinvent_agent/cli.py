@@ -276,9 +276,6 @@ def catalog_search(
 
 # Claude on Amazon Bedrock (Mantle client) IDs, most preferred first.
 CANDIDATE_MODELS = [
-    "anthropic.claude-opus-5",
-    "anthropic.claude-opus-5-5",
-    "anthropic.claude-sonnet-5",
     "anthropic.claude-opus-4-8",
     "anthropic.claude-opus-4-7",
     "anthropic.claude-haiku-4-5",

@@ -10,7 +10,7 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for the architecture and [`docs/M0-auth-s
 
 ## Quick start
 
-Everything runs in **us-east-1** with your **default AWS profile**. You need Python 3.11+, [uv](https://docs.astral.sh/uv/), Node (for the CDK CLI), and Bedrock model access in us-east-1 for **Titan Text Embeddings v2** and **Claude Opus 5**.
+Everything runs in **us-east-1** with your **default AWS profile**. You need Python 3.11+, [uv](https://docs.astral.sh/uv/), Node (for the CDK CLI), and Bedrock model access in us-east-1 for **Titan Text Embeddings v2** and **Claude Opus 4.8** (check with `uv run reinvent-agent check-models`).
 
 ```bash
 uv sync --all-groups --extra ui

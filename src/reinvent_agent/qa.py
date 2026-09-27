@@ -32,6 +32,12 @@ class Answer:
     cited: list[dict] = field(default_factory=list)  # search results the model saw
 
 
+def thinking_config(model: str) -> dict | None:
+    """Opus 4.7/4.8 run without thinking unless adaptive thinking is set explicitly;
+    Haiku 4.5 predates adaptive thinking, so leave it off there."""
+    return None if "haiku" in model else {"type": "adaptive"}
+
+
 def make_client(region: str):
     from anthropic import AnthropicBedrockMantle
 
@@ -90,9 +96,13 @@ class CatalogQA:
     def ask(self, question: str, history: list[dict] | None = None) -> Answer:
         seen: dict[str, dict] = {}
         year = self.event_id[-4:] if self.event_id[-4:].isdigit() else ""
+        extra = {}
+        if (thinking := thinking_config(self.model)) is not None:
+            extra["thinking"] = thinking
         runner = self.client.beta.messages.tool_runner(
             model=self.model,
             max_tokens=16000,
+            **extra,
             system=SYSTEM_PROMPT.format(year=year, event_id=self.event_id),
             tools=self._tools(seen),
             messages=[*(history or []), {"role": "user", "content": question}],

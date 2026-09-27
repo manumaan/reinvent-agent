@@ -13,6 +13,8 @@ from functools import lru_cache
 
 REGION = "us-east-1"
 STACKS = ("ReinventAgentData", "ReinventAgentSearch")
+# Claude Opus 5 / Sonnet 5 are not available to this account (2026-09-27).
+DEFAULT_MODEL = "anthropic.claude-opus-4-8"
 
 
 @dataclass(frozen=True)
@@ -58,5 +60,5 @@ def settings() -> Settings:
         vector_index=env("REINVENT_VECTOR_INDEX") or outputs.get("VectorIndexName", "sessions"),
         sessions_table=env("REINVENT_SESSIONS_TABLE") or outputs.get("SessionsTableName"),
         token_secret_arn=env("REINVENT_TOKEN_SECRET_ID") or outputs.get("TokenSecretArn"),
-        model=env("REINVENT_MODEL", "anthropic.claude-opus-5"),
+        model=env("REINVENT_MODEL", DEFAULT_MODEL),
     )

@@ -21,6 +21,6 @@ def test_env_overrides(monkeypatch):
     try:
         cfg = config.settings()
         assert (cfg.vector_bucket, cfg.sessions_table, cfg.region) == ("vb", "tbl", "us-east-1")
-        assert cfg.model == "anthropic.claude-opus-5"
+        assert cfg.model == "anthropic.claude-opus-4-8"
     finally:
         config.settings.cache_clear()

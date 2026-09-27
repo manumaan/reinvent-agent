@@ -160,7 +160,7 @@ The catalog gives each session a venue and room. We add the geography.
 
 ## 6. Agent design
 
-- **Model:** Claude on Bedrock, the latest Sonnet-class model for the conversation loop. A Haiku-class model does bulk relevance scoring, for cost.
+- **Model:** Claude Opus 4.8 on Bedrock for the conversation loop; Claude Haiku 4.5 for bulk relevance scoring, for cost.
 - **Framework:** Strands Agents (Python) on AgentCore Runtime.
 - **Tools the agent sees:**
 
@@ -211,7 +211,7 @@ Python 3.12, uv, ruff and pytest, with GitHub Actions CI running lint, tests and
 **M1 implementation notes (2026-09-25):**
 - **S3 Vectors is used directly, not through a Bedrock Knowledge Base.** There is one document per session with structured metadata, so the KB's chunking and ingestion jobs add nothing. Direct `PutVectors`/`QueryVectors` gives exact metadata filters (level, day, venue, type, services, time window) at lower cost. Titan Text Embeddings v2 (1024-dim, cosine).
 - **Venue inference:** 621 of 1,603 live sessions have no `venue`. It is learned from room names of sessions that do have one (`catalog/venues.py`); `venueSource` records how each venue was set.
-- **Q&A model:** Claude Opus 5 on Amazon Bedrock (`anthropic.claude-opus-5`, Anthropic SDK Bedrock Mantle client) drives a `catalog_search` tool through the SDK tool runner. The reranker is deferred until the eval set shows it is needed.
+- **Q&A model:** Claude Opus 4.8 on Amazon Bedrock (`anthropic.claude-opus-4-8`, adaptive thinking, Anthropic SDK Bedrock Mantle client). Opus 5 and Sonnet 5 are not available to this account; Opus 4.7 and Haiku 4.5 are fallbacks via `REINVENT_MODEL`. It drives a `catalog_search` tool through the SDK tool runner. The reranker is deferred until the eval set shows it is needed.
 - **Deployment:** us-east-1, default AWS profile. `ReinventAgentData` and `ReinventAgentSearch` stacks.
 
 Recommendations accepted: AgentCore + Strands, S3 Vectors + reranker, **Streamlit UI run locally** (React deferred), region **`us-east-1`**, push-notification fallback for unattended auth. Q1 is resolved by the M0 spike. Q3 (network access) and Q5 (AWS account) are still open.

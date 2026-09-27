@@ -38,13 +38,14 @@ class FakeClient:
 
 def test_ask_runs_tool_and_collects_citations():
     client = FakeClient({"query": "DynamoDB data modeling", "min_level": 400, "limit": 3})
-    qa = CatalogQA(_search(), client, "anthropic.claude-opus-5")
+    qa = CatalogQA(_search(), client, "anthropic.claude-opus-4-8")
     answer = qa.ask("Deep dives on DynamoDB modeling?")
     assert "[DAT401]" in answer.text
     assert answer.cited and answer.cited[0]["code"] == "DAT401"
     assert all(c["level"] >= 400 for c in answer.cited)
-    assert client.kwargs["model"] == "anthropic.claude-opus-5"
+    assert client.kwargs["model"] == "anthropic.claude-opus-4-8"
     assert "reinvent2026" in client.kwargs["system"]
+    assert client.kwargs["thinking"] == {"type": "adaptive"}
     assert client.kwargs["messages"][-1] == {
         "role": "user",
         "content": "Deep dives on DynamoDB modeling?",
@@ -61,3 +62,9 @@ def test_tool_schema_exposes_filters():
 def test_no_results_message():
     [tool] = CatalogQA(_search(), None, "m")._tools({})
     assert tool.call({"query": "anything", "venues": ["Nowhere"]}) == "No matching sessions."
+
+
+def test_haiku_runs_without_thinking():
+    client = FakeClient({"query": "serverless"})
+    CatalogQA(_search(), client, "anthropic.claude-haiku-4-5").ask("serverless?")
+    assert "thinking" not in client.kwargs
