@@ -274,6 +274,62 @@ def catalog_search(
         )
 
 
+# Claude on Amazon Bedrock (Mantle client) IDs, most preferred first.
+CANDIDATE_MODELS = [
+    "anthropic.claude-opus-5",
+    "anthropic.claude-opus-5-5",
+    "anthropic.claude-sonnet-5",
+    "anthropic.claude-opus-4-8",
+    "anthropic.claude-opus-4-7",
+    "anthropic.claude-haiku-4-5",
+]
+
+
+@app.command("check-models")
+def check_models():
+    """Probe which Bedrock models this AWS account can call in the configured region."""
+    import json
+
+    import anthropic
+    import boto3
+
+    from reinvent_agent.catalog.embeddings import TITAN_V2
+    from reinvent_agent.config import settings
+    from reinvent_agent.qa import make_client
+
+    cfg = settings()
+    try:
+        body = json.dumps({"inputText": "ok", "dimensions": 1024, "normalize": True})
+        boto3.client("bedrock-runtime", region_name=cfg.region).invoke_model(
+            modelId=TITAN_V2, body=body
+        )
+        typer.echo(f"OK    {TITAN_V2} (embeddings)")
+    except Exception as e:
+        typer.echo(f"FAIL  {TITAN_V2}: {type(e).__name__}: {str(e)[:160]}")
+
+    client = make_client(cfg.region)
+    working = []
+    for model in CANDIDATE_MODELS:
+        try:
+            client.messages.create(
+                model=model, max_tokens=64, messages=[{"role": "user", "content": "Say OK."}]
+            )
+            working.append(model)
+            typer.echo(f"OK    {model}")
+        except anthropic.APIStatusError as e:
+            typer.echo(f"FAIL  {model}: {e.status_code} {str(e.message)[:160]}")
+        except anthropic.APIConnectionError as e:
+            typer.echo(f"FAIL  {model}: connection error {e}")
+    typer.echo(f"\ncurrent REINVENT_MODEL: {cfg.model}")
+    if working and cfg.model not in working:
+        typer.echo(f"Use:  export REINVENT_MODEL={working[0]}")
+    elif not working:
+        typer.echo(
+            "No Claude model answered via the Bedrock Mantle endpoint. Enable one under "
+            f"Bedrock console -> Model access in {cfg.region}, then re-run."
+        )
+
+
 @app.command("ask")
 def ask(question: str):
     """Ask a question about the catalog; answers cite session codes."""
