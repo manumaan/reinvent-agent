@@ -144,3 +144,18 @@ def test_titan_embedder_request_shape():
     model, body = calls[0]
     assert model == "amazon.titan-embed-text-v2:0"
     assert body["dimensions"] == 1024 and body["normalize"] is True
+
+
+def test_browse_lists_whole_catalog_in_time_order_and_filters(sessions):
+    from reinvent_agent.catalog.search import browse
+
+    docs = build_documents(sessions, EVENT)
+    everything = [r.summary() for r in browse(docs)]
+    assert len(everything) == len(sessions)
+    keys = [(r["day"], r["start"]) for r in everything]
+    assert keys == sorted(keys)
+    venetian = browse(docs, SearchFilters(venues=["Venetian"], min_level=300))
+    assert venetian and all(
+        r.metadata["venue"] == "Venetian" and r.metadata["levelNum"] >= 300 for r in venetian
+    )
+    assert browse(docs, SearchFilters(days=["2026-12-04"])) == []

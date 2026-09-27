@@ -57,3 +57,74 @@ def test_describe_uses_catalog_then_get_session(tmp_path):
         "Venetian",
     )
     assert ms.describe("NEW1")["title"] == "Fetched"
+
+
+class WriteClient(FakeClient):
+    def __init__(self):
+        super().__init__([])
+        self.reserved = []
+        self.closed = False
+
+    def get_schedule(self, event_id):
+        self.calls += 1
+        return Schedule(favorites=list(self.favorites), reserved=list(self.reserved))
+
+    def associate_favorites(self, event_id, ids):
+        from reinvent_agent.events_api.models import BulkResult
+
+        failed = [{"sessionId": i, "code": "alreadyFavorited"} for i in ids if i in self.favorites]
+        new = [i for i in ids if i not in self.favorites]
+        self.favorites += new
+        return BulkResult.model_validate({"successful": new, "failed": failed})
+
+    def disassociate_favorite(self, event_id, sid):
+        self.favorites.remove(sid)
+        return True
+
+    def reserve_sessions(self, event_id, ids):
+        from reinvent_agent.events_api.client import OperationClosedError
+        from reinvent_agent.events_api.models import BulkResult
+
+        if self.closed:
+            raise OperationClosedError(409, {"message": "closed"}, "POST", "/reservations")
+        self.reserved += ids[:1]
+        return BulkResult.model_validate(
+            {
+                "successful": ids[:1],
+                "failed": [
+                    {"sessionId": i, "code": "scheduleConflict", "conflictsWith": ["SVS401"]}
+                    for i in ids[1:]
+                ],
+            }
+        )
+
+    def cancel_reservation(self, event_id, sid):
+        self.reserved.remove(sid)
+        return True
+
+
+def test_writes_report_outcomes_and_refresh_snapshot(tmp_path):
+    client = WriteClient()
+    ms = MySchedule.with_inferred_venues("ev", lambda: client, catalog(), path=tmp_path / "s.json")
+    r = ms.favorite(["SVS401", "ANT305"])
+    assert r.done == ["SVS401", "ANT305"] and not r.failed
+    assert ms.load().favorites == ["SVS401", "ANT305"]  # snapshot re-read after the write
+    assert ms.favorite(["SVS401"]).done == ["SVS401"]  # alreadyFavorited counts as done
+    ms.unfavorite(["SVS401"])
+    assert ms.load().favorites == ["ANT305"]
+
+    r = ms.reserve(["SVS401", "SVS310"])
+    assert r.done == ["SVS401"]
+    assert r.failed == {"SVS310": "conflicts with another reservation (SVS401)"}
+    ms.cancel_reservation(["SVS401"])
+    assert ms.load().reserved == []
+
+    client.closed = True
+    r = ms.reserve(["SVS401"])
+    assert r.note and "Oct 8" in r.note and r.failed == {"SVS401": "reservations not open"}
+
+
+def test_writes_need_sign_in(tmp_path):
+    ms = MySchedule("ev", lambda: None, {}, path=tmp_path / "s.json")
+    with pytest.raises(NotSignedIn):
+        ms.favorite(["X"])

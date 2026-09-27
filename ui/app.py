@@ -21,6 +21,8 @@ from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
 from reinvent_agent.llm import get_provider
 from reinvent_agent.schedule import MySchedule
 
+FAV_ICON, RES_ICON = "⭐", "🎟️"
+
 st.set_page_config(page_title="re:Invent planner", page_icon="🗓️", layout="wide")
 cfg = settings()
 store = FileTokenStore()
@@ -162,6 +164,14 @@ def qa_backend():
     return CatalogQA(search, client, cfg.model, cfg.event_id, schedule=my_schedule())
 
 
+@st.cache_resource
+def catalog_docs():
+    """Per-session metadata exactly as indexed (inferred venues), for browsing."""
+    from reinvent_agent.catalog.ingest import build_documents
+
+    return build_documents(list(local_catalog().values()), cfg.event_id)
+
+
 @st.cache_data
 def local_catalog() -> dict[str, Session]:
     try:
@@ -208,30 +218,142 @@ def ask_tab():
         ]
 
 
-def search_tab():
-    from reinvent_agent.catalog.search import SearchFilters
+def search_tab(signed_in: bool):
+    from datetime import date
 
-    search = search_backend()
-    if search is None:
-        return not_deployed()
-    q = st.text_input("Search sessions", placeholder="serverless event-driven architecture")
-    c1, c2, c3, c4 = st.columns(4)
-    min_level = c1.selectbox("Min level", [None, 200, 300, 400, 500])
-    days = c2.multiselect(
-        "Days", ["2026-11-30", "2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04"]
+    from reinvent_agent.catalog.search import SearchFilters, browse
+
+    docs = catalog_docs()
+    meta = [d.metadata for d in docs]
+    q = st.text_input(
+        "Search sessions",
+        placeholder="serverless event-driven architecture (leave empty to browse all)",
     )
-    venues = c3.multiselect("Venues", ["MGM Grand", "Caesars Forum", "Venetian", "Caesars Palace"])
-    types = c4.multiselect(
-        "Types",
-        ["Breakout session", "Chalk talk", "Workshop", "Builders' session", "Code talk",
-         "Lightning talk"],
-    )  # fmt: skip
+    c1, c2, c3, c4 = st.columns(4)
+    min_level = c1.selectbox("Min level", [None, 100, 200, 300, 400, 500])
+    days = c2.multiselect(
+        "Days",
+        sorted({m["day"] for m in meta if "day" in m}),
+        format_func=lambda d: date.fromisoformat(d).strftime("%a %b %-d"),
+    )
+    venues = c3.multiselect("Venues", sorted({m["venue"] for m in meta}))
+    types = c4.multiselect("Types", sorted({m["type"] for m in meta}))
+    filters = SearchFilters(
+        event_id=cfg.event_id, min_level=min_level, days=days, venues=venues, types=types
+    )
+
     if q:
-        filters = SearchFilters(
-            event_id=cfg.event_id, min_level=min_level, days=days, venues=venues, types=types
-        )
-        rows = [r.summary() for r in search.search(q, filters, k=25)]
-        st.dataframe(rows, hide_index=True, use_container_width=True)
+        search = search_backend()
+        if search is None:
+            return not_deployed()
+        # Selecting rows reruns the script; keep results so we don't re-embed the query.
+        key = (q, min_level, tuple(days), tuple(venues), tuple(types))
+        cached = st.session_state.get("search_results")
+        if not cached or cached[0] != key:
+            cached = (key, [r.summary() for r in search.search(q, filters, k=25)])
+            st.session_state["search_results"] = cached
+        results = cached[1]
+        st.caption(f"Top {len(results)} matches for “{q}”.")
+    else:
+        if not docs:
+            return st.info("No catalog yet: download it from the Catalog tab.")
+        key = ("", min_level, tuple(days), tuple(venues), tuple(types))
+        results = [r.summary() for r in browse(docs, filters)]
+        st.caption(f"{len(results)} of {len(docs)} sessions.")
+
+    sched = None
+    if signed_in:
+        try:
+            sched = my_schedule().load()
+        except Exception as e:
+            st.warning(f"Could not load your schedule: {e}")
+    favorites = set(sched.favorites) if sched else set()
+    reserved = set(sched.reserved) if sched else set()
+
+    cols = ("code", "title", "type", "level", "weekday", "day", "start", "end", "venue")
+    rows = [
+        {
+            "fav": FAV_ICON if r["sessionId"] in favorites else "",
+            "res": RES_ICON if r["sessionId"] in reserved else "",
+            **{c: r.get(c) for c in cols},
+        }
+        for r in results
+    ]
+    if signed_in:
+        st.caption(f"{FAV_ICON} favorite · {RES_ICON} reserved")
+    event = st.dataframe(
+        rows,
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "fav": st.column_config.TextColumn(FAV_ICON, width=40, help="Favorited"),
+            "res": st.column_config.TextColumn(RES_ICON, width=40, help="Reserved"),
+        },
+        on_select="rerun" if signed_in else "ignore",
+        selection_mode="multi-row",
+        key=f"search_table_{hash(key)}",
+    )
+    if not signed_in:
+        return st.caption("Sign in to favorite or reserve sessions from here.")
+    picked = [results[i] for i in event.selection.rows]
+    session_actions(picked, favorites, reserved)
+
+
+def session_actions(picked: list[dict], favorites: set[str], reserved: set[str]) -> None:
+    """Favorite / unfavorite / reserve / cancel for the selected search rows."""
+    if flash := st.session_state.pop("action_result", None):
+        for kind, text in flash:
+            getattr(st, kind)(text)
+    ids = [r["sessionId"] for r in picked]
+    to_fav = [i for i in ids if i not in favorites]
+    to_unfav = [i for i in ids if i in favorites]
+    # The catalog's isReservable can be stale (false everywhere before seating opens),
+    # so let the API decide; it answers 409 (not open yet) or sessionNotReservable.
+    to_reserve = [i for i in ids if i not in reserved]
+    to_cancel = [i for i in ids if i in reserved]
+    st.caption(
+        f"{len(ids)} selected. Tick rows in the table, then choose an action."
+        if ids
+        else "Tick rows in the table to favorite or reserve them."
+    )
+    b1, b2, b3, b4 = st.columns(4)
+    sched = my_schedule()
+    actions = [
+        (b1, f"{FAV_ICON} Favorite ({len(to_fav)})", to_fav, sched.favorite),
+        (b2, f"☆ Unfavorite ({len(to_unfav)})", to_unfav, sched.unfavorite),
+        (b3, f"{RES_ICON} Reserve ({len(to_reserve)})", to_reserve, sched.reserve),
+        (b4, f"Cancel reservation ({len(to_cancel)})", to_cancel, sched.cancel_reservation),
+    ]
+    for col, label, targets, fn in actions:
+        if col.button(label, disabled=not targets, use_container_width=True):
+            code = {r["sessionId"]: r["code"] for r in picked}
+            try:
+                result = fn(targets)
+            except Exception as e:
+                st.session_state["action_result"] = [
+                    ("error", f"{label.split(' (')[0]} failed: {e}")
+                ]
+            else:
+                msgs = []
+                if result.done:
+                    names = ", ".join(code.get(i, i) for i in result.done)
+                    msgs.append(("success", f"{result.action.capitalize()}: {names}"))
+                if result.note:
+                    msgs.append(("warning", result.note))
+                elif result.failed:
+                    msgs.append(
+                        (
+                            "warning",
+                            "Not done: "
+                            + "; ".join(
+                                f"{code.get(i, i)} ({why})" for i, why in result.failed.items()
+                            ),
+                        )
+                    )
+                st.session_state["action_result"] = msgs
+            st.rerun()
+    if to_reserve:
+        st.caption("Reserved seating opens in the Events API on Oct 8, 2026.")
 
 
 def index_catalog(sessions: list[Session], bar) -> None:
@@ -276,6 +398,7 @@ def refresh_catalog(do_index: bool) -> None:
     if cfg.catalog_bucket:
         st.success(f"Uploaded to `{source.upload(body, cfg.catalog_bucket, cfg.event_id)}`.")
     local_catalog.clear()
+    catalog_docs.clear()
     my_schedule.clear()
     qa_backend.clear()
     if do_index and cfg.vector_bucket:
@@ -378,7 +501,7 @@ tab_ask, tab_search, tab_sched, tab_cat = st.tabs(["Ask", "Search", "My schedule
 with tab_ask:
     ask_tab()
 with tab_search:
-    search_tab()
+    search_tab(signed_in)
 with tab_sched:
     schedule_tab(signed_in)
 with tab_cat:

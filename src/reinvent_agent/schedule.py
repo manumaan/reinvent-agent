@@ -12,11 +12,29 @@ import json
 import os
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from reinvent_agent.events_api.models import Schedule, Session
+from reinvent_agent.events_api.models import BulkResult, Schedule, Session
 
 MAX_AGE_SECONDS = 15 * 60
+
+FAILURE_TEXT = {
+    "sessionNotReservable": "not reservable",
+    "scheduleConflict": "conflicts with another reservation",
+    "sessionFull": "session is full",
+    "insufficientAccess": "your pass doesn't include it",
+    "timePassed": "session already happened",
+    "notFavorited": "wasn't a favorite",
+}
+
+
+@dataclass
+class WriteResult:
+    action: str
+    done: list[str] = field(default_factory=list)  # session IDs now in the desired state
+    failed: dict[str, str] = field(default_factory=dict)  # session ID -> reason
+    note: str | None = None  # whole-request problem, e.g. reservations not open yet
 
 
 class NotSignedIn(RuntimeError):
@@ -98,6 +116,68 @@ class MySchedule:
     def fetched_at(self) -> float | None:
         snap = self._read_snapshot()
         return snap[1] if snap else None
+
+    # --- writes (each re-reads GetSchedule, the source of truth) ---------------
+
+    def _client_or_raise(self):
+        client = self.client_factory()
+        if client is None:
+            raise NotSignedIn("Not signed in with AWS Builder ID.")
+        return client
+
+    def _bulk(self, action: str, result: BulkResult) -> WriteResult:
+        out = WriteResult(action, done=list(result.successful))
+        for f in result.failed:
+            if f.already_done:
+                out.done.append(f.session_id)
+                continue
+            reason = FAILURE_TEXT.get(f.code, f.code)
+            if f.conflicts_with:
+                codes = [self.describe(c).get("code", c) for c in f.conflicts_with]
+                reason += f" ({', '.join(codes)})"
+            out.failed[f.session_id] = reason
+        return out
+
+    def favorite(self, ids: list[str]) -> WriteResult:
+        client = self._client_or_raise()
+        try:
+            return self._bulk("favorite", client.associate_favorites(self.event_id, ids))
+        finally:
+            self.refresh()
+
+    def unfavorite(self, ids: list[str]) -> WriteResult:
+        client = self._client_or_raise()
+        try:
+            for sid in ids:
+                client.disassociate_favorite(self.event_id, sid)  # 404 = already gone
+            return WriteResult("unfavorite", done=list(ids))
+        finally:
+            self.refresh()
+
+    def reserve(self, ids: list[str]) -> WriteResult:
+        from reinvent_agent.events_api.client import OperationClosedError
+
+        client = self._client_or_raise()
+        try:
+            return self._bulk("reserve", client.reserve_sessions(self.event_id, ids))
+        except OperationClosedError:
+            return WriteResult(
+                "reserve",
+                failed={sid: "reservations not open" for sid in ids},
+                note="Reservations aren't open yet: the Events API opens reserved seating "
+                "on Oct 8, 2026. Favorite the sessions for now.",
+            )
+        finally:
+            self.refresh()
+
+    def cancel_reservation(self, ids: list[str]) -> WriteResult:
+        client = self._client_or_raise()
+        try:
+            for sid in ids:
+                client.cancel_reservation(self.event_id, sid)  # 404 = already gone
+            return WriteResult("cancel reservation", done=list(ids))
+        finally:
+            self.refresh()
 
     # --- details -------------------------------------------------------------
 

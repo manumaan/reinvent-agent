@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from reinvent_agent.catalog.documents import SessionDoc
 from reinvent_agent.catalog.embeddings import Embedder
-from reinvent_agent.catalog.vector_store import Hit, VectorStore
+from reinvent_agent.catalog.vector_store import Hit, VectorStore, matches
 
 
 @dataclass
@@ -69,6 +71,7 @@ class SearchResult:
             "end": _hhmm(m.get("endMin")),
             "venue": m.get("venue"),
             "room": m.get("room"),
+            "reservable": m.get("reservable"),
             "services": m.get("services"),
             "speakers": m.get("speakers"),
             "snippet": m.get("snippet"),
@@ -106,3 +109,27 @@ class CatalogSearch:
             )
             for h in hits
         ]
+
+
+def browse(docs: Iterable[SessionDoc], filters: SearchFilters | None = None) -> list[SearchResult]:
+    """The whole catalog, no query: the same metadata and filter semantics as the vector
+    index, in time order (unscheduled sessions last)."""
+    flt = (filters or SearchFilters()).to_filter()
+    kept = [d for d in docs if matches(d.metadata, flt)]
+    kept.sort(
+        key=lambda d: (
+            d.metadata.get("day", "9999"),
+            d.metadata.get("startMin", 24 * 60),
+            d.metadata.get("code", ""),
+        )
+    )
+    return [
+        SearchResult(
+            session_id=d.metadata["sessionId"],
+            code=d.metadata.get("code", ""),
+            title=d.metadata.get("title", ""),
+            score=0.0,
+            metadata=d.metadata,
+        )
+        for d in kept
+    ]
