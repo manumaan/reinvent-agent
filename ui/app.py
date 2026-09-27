@@ -105,7 +105,8 @@ def qa_backend():
     search = search_backend()
     if search is None:
         return None
-    return CatalogQA(search, make_client(cfg.region), cfg.model, cfg.event_id)
+    client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
+    return CatalogQA(search, client, cfg.model, cfg.event_id)
 
 
 @st.cache_data

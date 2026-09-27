@@ -6,6 +6,9 @@ from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_secretsmanager as sm
 from constructs import Construct
 
+# Mirrors reinvent_agent.config.API_KEY_PLACEHOLDER.
+API_KEY_PLACEHOLDER = "UNSET"
+
 
 class DataStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
@@ -70,7 +73,19 @@ class DataStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
+        # Claude API key (platform.claude.com), used instead of Bedrock for Claude calls
+        # when set. Created with a placeholder; set the real value out of band with
+        # `reinvent-agent config set-api-key` so it never appears in code or templates.
+        self.anthropic_api_key = sm.Secret(
+            self,
+            "AnthropicApiKey",
+            description="Claude API key for reinvent-agent (`reinvent-agent config set-api-key`)",
+            secret_string_value=SecretValue.unsafe_plain_text(API_KEY_PLACEHOLDER),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
+
         CfnOutput(self, "CatalogBucketName", value=self.catalog_bucket.bucket_name)
         CfnOutput(self, "SessionsTableName", value=self.sessions_table.table_name)
         CfnOutput(self, "PlansTableName", value=self.plans_table.table_name)
         CfnOutput(self, "TokenSecretArn", value=self.token_secret.secret_arn)
+        CfnOutput(self, "AnthropicApiKeySecretArn", value=self.anthropic_api_key.secret_arn)

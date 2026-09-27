@@ -38,7 +38,22 @@ def thinking_config(model: str) -> dict | None:
     return None if "haiku" in model else {"type": "adaptive"}
 
 
-def make_client(region: str):
+def make_client(region: str, provider: str = "bedrock", key_secret_id: str | None = None):
+    """Claude via Amazon Bedrock (AWS credentials) or the Claude API (API key from
+    ANTHROPIC_API_KEY or the AnthropicApiKey secret). Both expose the same Messages
+    API surface, including the tool runner."""
+    if provider == "anthropic":
+        from anthropic import Anthropic
+
+        from reinvent_agent.config import anthropic_api_key
+
+        key = anthropic_api_key(key_secret_id, region)
+        if not key:
+            raise RuntimeError(
+                "No Claude API key: set ANTHROPIC_API_KEY or run "
+                "`reinvent-agent config set-api-key`."
+            )
+        return Anthropic(api_key=key)
     from anthropic import AnthropicBedrockMantle
 
     return AnthropicBedrockMantle(aws_region=region)

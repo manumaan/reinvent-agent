@@ -11,6 +11,7 @@ from reinvent_agent import config  # noqa: E402
 def app(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))  # no stored tokens
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setattr(config, "stack_outputs", lambda region, client=None: {})
     config.settings.cache_clear()
     yield AppTest.from_file("../ui/app.py", default_timeout=30)

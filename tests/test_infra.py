@@ -40,8 +40,20 @@ def test_tables(template):
     )
 
 
-def test_token_secret(template):
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
+def test_secrets(template):
+    template.resource_count_is("AWS::SecretsManager::Secret", 2)
+    # The API key secret is created with a placeholder, never a real key.
+    template.has_resource_properties(
+        "AWS::SecretsManager::Secret", {"SecretString": "UNSET", "Description": Match.any_value()}
+    )
+
+
+def test_placeholder_matches_application():
+    from stacks.data_stack import API_KEY_PLACEHOLDER
+
+    from reinvent_agent.config import API_KEY_PLACEHOLDER as APP_PLACEHOLDER
+
+    assert API_KEY_PLACEHOLDER == APP_PLACEHOLDER
 
 
 def test_search_stack_vector_index():

@@ -23,6 +23,59 @@ auth_app = typer.Typer(no_args_is_help=True, help="AWS Builder ID sign-in")
 catalog_app = typer.Typer(no_args_is_help=True, help="Read the session catalog")
 app.add_typer(auth_app, name="auth")
 app.add_typer(catalog_app, name="catalog")
+config_app = typer.Typer(no_args_is_help=True, help="Deployment settings and secrets")
+app.add_typer(config_app, name="config")
+
+
+@config_app.command("set-api-key")
+def config_set_api_key():
+    """Store a Claude API key (platform.claude.com) in the AnthropicApiKey secret.
+
+    Prompts without echo, so the key stays out of shell history and logs.
+    """
+    import boto3
+
+    from reinvent_agent.config import clear_caches, settings
+
+    cfg = settings()
+    if not cfg.anthropic_key_secret_arn:
+        typer.echo("No AnthropicApiKey secret found; deploy ReinventAgentData first.")
+        raise typer.Exit(1)
+    key = typer.prompt("Claude API key", hide_input=True).strip()
+    if not key.startswith("sk-ant-"):
+        typer.echo("That doesn't look like a Claude API key (expected sk-ant-...).")
+        raise typer.Exit(1)
+    boto3.client("secretsmanager", region_name=cfg.region).put_secret_value(
+        SecretId=cfg.anthropic_key_secret_arn, SecretString=key
+    )
+    clear_caches()
+    typer.echo("Stored. Claude calls now use the Claude API (unset with `config clear-api-key`).")
+
+
+@config_app.command("clear-api-key")
+def config_clear_api_key():
+    """Reset the secret to its placeholder, switching Claude calls back to Bedrock."""
+    import boto3
+
+    from reinvent_agent.config import API_KEY_PLACEHOLDER, settings
+
+    cfg = settings()
+    if not cfg.anthropic_key_secret_arn:
+        typer.echo("No AnthropicApiKey secret found.")
+        raise typer.Exit(1)
+    boto3.client("secretsmanager", region_name=cfg.region).put_secret_value(
+        SecretId=cfg.anthropic_key_secret_arn, SecretString=API_KEY_PLACEHOLDER
+    )
+    typer.echo("Cleared. Claude calls use Bedrock again.")
+
+
+@config_app.command("show")
+def config_show():
+    """Print resolved settings (never the API key itself)."""
+    from reinvent_agent.config import settings
+
+    for k, v in vars(settings()).items():
+        typer.echo(f"{k}: {v}")
 
 
 def _client() -> EventsApiClient:
@@ -275,16 +328,12 @@ def catalog_search(
 
 
 # Claude on Amazon Bedrock (Mantle client) IDs, most preferred first.
-CANDIDATE_MODELS = [
-    "anthropic.claude-opus-4-8",
-    "anthropic.claude-opus-4-7",
-    "anthropic.claude-haiku-4-5",
-]
+CANDIDATE_MODELS = ["claude-opus-4-8", "claude-opus-4-7", "claude-haiku-4-5"]
 
 
 @app.command("check-models")
 def check_models():
-    """Probe which Bedrock models this AWS account can call in the configured region."""
+    """Probe the embedding model and which Claude models the configured provider can call."""
     import json
 
     import anthropic
@@ -304,9 +353,11 @@ def check_models():
     except Exception as e:
         typer.echo(f"FAIL  {TITAN_V2}: {type(e).__name__}: {str(e)[:160]}")
 
-    client = make_client(cfg.region)
+    client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
+    typer.echo(f"Claude provider: {cfg.llm_provider}")
+    prefix = "anthropic." if cfg.llm_provider == "bedrock" else ""
     working = []
-    for model in CANDIDATE_MODELS:
+    for model in (prefix + m for m in CANDIDATE_MODELS):
         try:
             client.messages.create(
                 model=model, max_tokens=64, messages=[{"role": "user", "content": "Say OK."}]
@@ -321,10 +372,12 @@ def check_models():
     if working and cfg.model not in working:
         typer.echo(f"Use:  export REINVENT_MODEL={working[0]}")
     elif not working:
-        typer.echo(
-            "No Claude model answered via the Bedrock Mantle endpoint. Enable one under "
-            f"Bedrock console -> Model access in {cfg.region}, then re-run."
+        hint = (
+            f"Enable one under Bedrock console -> Model access in {cfg.region}"
+            if cfg.llm_provider == "bedrock"
+            else "Check ANTHROPIC_API_KEY and your Claude Console billing"
         )
+        typer.echo(f"No Claude model answered. {hint}, then re-run.")
 
 
 @app.command("ask")
@@ -333,7 +386,8 @@ def ask(question: str):
     from reinvent_agent.qa import CatalogQA, make_client
 
     cfg, search = _search_backend()
-    answer = CatalogQA(search, make_client(cfg.region), cfg.model, cfg.event_id).ask(question)
+    client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
+    answer = CatalogQA(search, client, cfg.model, cfg.event_id).ask(question)
     typer.echo(answer.text)
 
 

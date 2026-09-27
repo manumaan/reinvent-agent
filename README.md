@@ -25,6 +25,11 @@ uv run reinvent-agent catalog report          # field coverage + venue inference
 # 3. Deploy storage + search (first time: npx aws-cdk@2 bootstrap)
 cd infra && npx aws-cdk@2 deploy --all && cd ..
 
+# 3b. Optional: use a Claude API key (platform.claude.com) instead of Bedrock for Claude.
+#     Stored in Secrets Manager via a hidden prompt; embeddings still use Bedrock Titan.
+uv run reinvent-agent config set-api-key
+uv run reinvent-agent check-models
+
 # 4. Embed and index the catalog into S3 Vectors + DynamoDB
 uv run reinvent-agent catalog index
 
@@ -34,7 +39,9 @@ uv run reinvent-agent ask "Which sessions touch on zero-ETL between Aurora and R
 uv run streamlit run ui/app.py                # Ask / Search / My schedule, with in-app sign-in
 ```
 
-The app and CLI read the bucket, table and secret names from the deployed stacks' outputs, so there is nothing to configure. Environment variables (`REINVENT_VECTOR_BUCKET`, `REINVENT_SESSIONS_TABLE`, `REINVENT_MODEL`, …; see `src/reinvent_agent/config.py`) override them.
+The app and CLI read the bucket, table and secret names from the deployed stacks' outputs, so there is nothing to configure. Environment variables (`REINVENT_VECTOR_BUCKET`, `REINVENT_SESSIONS_TABLE`, `REINVENT_MODEL`, `REINVENT_LLM_PROVIDER`, `ANTHROPIC_API_KEY`, …; see `src/reinvent_agent/config.py`) override them. `uv run reinvent-agent config show` prints what is in effect (never the key).
+
+**Which Claude endpoint is used:** `REINVENT_LLM_PROVIDER` if set; otherwise the Claude API when a key is available (`ANTHROPIC_API_KEY`, or the `AnthropicApiKey` secret set by `config set-api-key`); otherwise Amazon Bedrock. The default model is Claude Opus 4.8 on either endpoint. `config clear-api-key` switches back to Bedrock.
 
 ## Development
 

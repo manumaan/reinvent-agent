@@ -17,10 +17,85 @@ def test_stack_outputs_merges_deployed_stacks():
 def test_env_overrides(monkeypatch):
     monkeypatch.setenv("REINVENT_VECTOR_BUCKET", "vb")
     monkeypatch.setenv("REINVENT_SESSIONS_TABLE", "tbl")
+    monkeypatch.setenv("REINVENT_ANTHROPIC_KEY_SECRET_ID", "arn:key")
+    monkeypatch.setattr(config, "_secret_value", lambda sid, region, client=None: "UNSET")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("REINVENT_LLM_PROVIDER", raising=False)
     config.settings.cache_clear()
     try:
         cfg = config.settings()
         assert (cfg.vector_bucket, cfg.sessions_table, cfg.region) == ("vb", "tbl", "us-east-1")
-        assert cfg.model == "anthropic.claude-opus-4-8"
+        assert (cfg.llm_provider, cfg.model) == ("bedrock", "anthropic.claude-opus-4-8")
+    finally:
+        config.settings.cache_clear()
+
+
+def test_api_key_selects_claude_api(monkeypatch):
+    monkeypatch.setenv("REINVENT_VECTOR_BUCKET", "vb")
+    monkeypatch.setenv("REINVENT_SESSIONS_TABLE", "tbl")
+    monkeypatch.setenv("REINVENT_ANTHROPIC_KEY_SECRET_ID", "arn:key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.delenv("REINVENT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("REINVENT_MODEL", raising=False)
+    config.settings.cache_clear()
+    try:
+        cfg = config.settings()
+        assert (cfg.llm_provider, cfg.model) == ("anthropic", "claude-opus-4-8")
+        monkeypatch.setenv("REINVENT_LLM_PROVIDER", "bedrock")  # explicit choice wins
+        config.settings.cache_clear()
+        assert config.settings().llm_provider == "bedrock"
+    finally:
+        config.settings.cache_clear()
+
+
+def test_make_client_per_provider(monkeypatch):
+    from anthropic import Anthropic, AnthropicBedrockMantle
+
+    from reinvent_agent.qa import make_client
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "x")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "y")
+    assert isinstance(make_client("us-east-1", "anthropic"), Anthropic)
+    assert isinstance(make_client("us-east-1", "bedrock"), AnthropicBedrockMantle)
+
+
+class StubSecrets:
+    def __init__(self, value):
+        self.value, self.calls = value, 0
+
+    def get_secret_value(self, SecretId):  # noqa: N803
+        self.calls += 1
+        return {"SecretString": self.value}
+
+
+def test_api_key_from_secret(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config.clear_caches()
+    stub = StubSecrets("sk-ant-from-secret\n")
+    assert config.anthropic_api_key("arn:key", client=stub) == "sk-ant-from-secret"
+    config.clear_caches()
+    assert config.anthropic_api_key("arn:key", client=StubSecrets("UNSET")) is None
+    assert config.anthropic_api_key(None) is None
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")  # env wins, no secret read
+    other = StubSecrets("sk-ant-from-secret")
+    assert config.anthropic_api_key("arn:other", client=other) == "sk-ant-env"
+    assert other.calls == 0
+    config.clear_caches()
+
+
+def test_secret_key_selects_claude_api(monkeypatch):
+    monkeypatch.setenv("REINVENT_VECTOR_BUCKET", "vb")
+    monkeypatch.setenv("REINVENT_SESSIONS_TABLE", "tbl")
+    monkeypatch.setenv("REINVENT_ANTHROPIC_KEY_SECRET_ID", "arn:key")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("REINVENT_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("REINVENT_MODEL", raising=False)
+    monkeypatch.setattr(config, "_secret_value", lambda sid, region, client=None: "sk-ant-x")
+    config.settings.cache_clear()
+    try:
+        cfg = config.settings()
+        assert (cfg.llm_provider, cfg.model) == ("anthropic", "claude-opus-4-8")
+        assert "sk-ant" not in repr(cfg)
     finally:
         config.settings.cache_clear()
