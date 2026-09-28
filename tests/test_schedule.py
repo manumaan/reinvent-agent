@@ -128,3 +128,32 @@ def test_writes_need_sign_in(tmp_path):
     ms = MySchedule("ev", lambda: None, {}, path=tmp_path / "s.json")
     with pytest.raises(NotSignedIn):
         ms.favorite(["X"])
+
+
+def test_timeline_groups_real_schedule_by_day_and_flags_overlaps(tmp_path):
+    from datetime import datetime
+
+    from reinvent_agent.events_api.models import PersonalTime
+
+    ms = MySchedule.with_inferred_venues("ev", lambda: None, catalog(), path=tmp_path / "s.json")
+    sched = Schedule(
+        reserved=["SVS401"],
+        favorites=["SVS401", "SVS201", "SVS310"],
+        personal_time=[
+            PersonalTime(
+                personalTimeId="pt-1",
+                title="Lunch",
+                description="x",
+                startDateTime=datetime(2026, 12, 1, 20, 0),  # UTC = 12:00 Las Vegas
+                endDateTime=datetime(2026, 12, 1, 21, 0),
+            )
+        ],
+    )
+    days = ms.timeline(sched)
+    assert list(days) == ["2026-12-01"]
+    rows = {e["code"] or e["title"]: e for e in days["2026-12-01"]}
+    assert [e["start"] for e in days["2026-12-01"]] == ["09:00", "09:00", "10:30", "12:00"]
+    assert rows["SVS401"]["reserved"] and rows["SVS401"]["favorite"]
+    assert rows["SVS401"]["overlaps"] == ["SVS201"]
+    assert rows["Lunch"]["kind"] == "personal time" and rows["Lunch"]["end"] == "13:00"
+    assert rows["Lunch"]["overlaps"] == ["SVS310"]  # SVS310 runs 10:30-12:30

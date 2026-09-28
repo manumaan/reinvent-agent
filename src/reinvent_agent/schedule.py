@@ -18,6 +18,7 @@ from pathlib import Path
 from reinvent_agent.events_api.models import BulkResult, Schedule, Session
 
 MAX_AGE_SECONDS = 15 * 60
+EVENT_TZ = "America/Los_Angeles"  # re:Invent, Las Vegas
 
 FAILURE_TEXT = {
     "sessionNotReservable": "not reservable",
@@ -211,6 +212,58 @@ class MySchedule:
             "venue": self.venue_of(s),
             "room": s.room,
         }
+
+    def timeline(self, sched: Schedule, tz: str = EVENT_TZ) -> dict[str, list[dict]]:
+        """The real schedule, day by day: reserved and favorited sessions plus personal
+        time, in start order, with overlapping entries flagged. Undated items go under
+        ``"unscheduled"``."""
+        from datetime import UTC
+        from zoneinfo import ZoneInfo
+
+        entries: dict[str, dict] = {}
+        for sid in dict.fromkeys(sched.reserved + sched.favorites):
+            d = self.describe(sid)
+            entries[sid] = d | {
+                "favorite": sid in sched.favorites,
+                "reserved": sid in sched.reserved,
+                "kind": "session",
+            }
+        local = ZoneInfo(tz)
+        for p in sched.personal_time:  # API times are UTC without an offset
+            start = p.start_date_time.replace(tzinfo=UTC).astimezone(local)
+            end = p.end_date_time.replace(tzinfo=UTC).astimezone(local)
+            entries[p.personal_time_id] = {
+                "sessionId": p.personal_time_id,
+                "code": "",
+                "title": p.title,
+                "day": start.date().isoformat(),
+                "weekday": start.strftime("%A"),
+                "start": start.strftime("%H:%M"),
+                "end": end.strftime("%H:%M"),
+                "venue": p.location,
+                "favorite": False,
+                "reserved": False,
+                "kind": "personal time",
+            }
+        days: dict[str, list[dict]] = {}
+        for e in entries.values():
+            days.setdefault(e.get("day") or "unscheduled", []).append(e)
+        for day, items in days.items():
+            items.sort(key=lambda e: (e.get("start") or "99", e.get("code") or ""))
+            for e in items:
+                e["overlaps"] = [
+                    o.get("code") or o["title"]
+                    for o in items
+                    if o is not e
+                    and day != "unscheduled"
+                    and e.get("start")
+                    and o.get("start")
+                    and e.get("end")
+                    and o.get("end")
+                    and o["start"] < e["end"]
+                    and e["start"] < o["end"]
+                ]
+        return dict(sorted(days.items()))
 
     def sessions(self, ids: list[str]) -> list[Session]:
         return [s for sid in ids if (s := self.session(sid)) is not None]

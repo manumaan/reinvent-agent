@@ -8,7 +8,6 @@ localhost (ports 8484-8489), so the app signs you in itself.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 
@@ -279,9 +278,15 @@ def search_tab(signed_in: bool):
         }
         for r in results
     ]
+    # Actions sit ABOVE the table so they are visible right after ticking rows. The
+    # selection is read from widget state (set on the rerun the tick triggered); the
+    # nonce gives a fresh, unselected table after each action.
+    table_key = f"search_table_{hash(key)}_{st.session_state.get('table_nonce', 0)}"
     if signed_in:
-        st.caption(f"{FAV_ICON} favorite · {RES_ICON} reserved")
-    event = st.dataframe(
+        state = st.session_state.get(table_key)
+        selected = list(state.selection.rows) if state is not None else []
+        session_actions([results[i] for i in selected], favorites, reserved)
+    st.dataframe(
         rows,
         hide_index=True,
         use_container_width=True,
@@ -291,19 +296,14 @@ def search_tab(signed_in: bool):
         },
         on_select="rerun" if signed_in else "ignore",
         selection_mode="multi-row",
-        key=f"search_table_{hash(key)}",
+        key=table_key,
     )
     if not signed_in:
-        return st.caption("Sign in to favorite or reserve sessions from here.")
-    picked = [results[i] for i in event.selection.rows]
-    session_actions(picked, favorites, reserved)
+        st.caption("Sign in to favorite or reserve sessions from here.")
 
 
 def session_actions(picked: list[dict], favorites: set[str], reserved: set[str]) -> None:
-    """Favorite / unfavorite / reserve / cancel for the selected search rows."""
-    if flash := st.session_state.pop("action_result", None):
-        for kind, text in flash:
-            getattr(st, kind)(text)
+    """Toolbar for the selected search rows: favorite / unfavorite / reserve / cancel."""
     ids = [r["sessionId"] for r in picked]
     to_fav = [i for i in ids if i not in favorites]
     to_unfav = [i for i in ids if i in favorites]
@@ -311,49 +311,60 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
     # so let the API decide; it answers 409 (not open yet) or sessionNotReservable.
     to_reserve = [i for i in ids if i not in reserved]
     to_cancel = [i for i in ids if i in reserved]
-    st.caption(
-        f"{len(ids)} selected. Tick rows in the table, then choose an action."
-        if ids
-        else "Tick rows in the table to favorite or reserve them."
-    )
-    b1, b2, b3, b4 = st.columns(4)
     sched = my_schedule()
-    actions = [
-        (b1, f"{FAV_ICON} Favorite ({len(to_fav)})", to_fav, sched.favorite),
-        (b2, f"☆ Unfavorite ({len(to_unfav)})", to_unfav, sched.unfavorite),
-        (b3, f"{RES_ICON} Reserve ({len(to_reserve)})", to_reserve, sched.reserve),
-        (b4, f"Cancel reservation ({len(to_cancel)})", to_cancel, sched.cancel_reservation),
-    ]
-    for col, label, targets, fn in actions:
-        if col.button(label, disabled=not targets, use_container_width=True):
-            code = {r["sessionId"]: r["code"] for r in picked}
-            try:
-                result = fn(targets)
-            except Exception as e:
-                st.session_state["action_result"] = [
-                    ("error", f"{label.split(' (')[0]} failed: {e}")
-                ]
-            else:
-                msgs = []
-                if result.done:
-                    names = ", ".join(code.get(i, i) for i in result.done)
-                    msgs.append(("success", f"{result.action.capitalize()}: {names}"))
-                if result.note:
-                    msgs.append(("warning", result.note))
-                elif result.failed:
-                    msgs.append(
-                        (
-                            "warning",
-                            "Not done: "
-                            + "; ".join(
-                                f"{code.get(i, i)} ({why})" for i, why in result.failed.items()
-                            ),
-                        )
-                    )
-                st.session_state["action_result"] = msgs
-            st.rerun()
-    if to_reserve:
-        st.caption("Reserved seating opens in the Events API on Oct 8, 2026.")
+
+    with st.container(border=True):
+        if flash := st.session_state.pop("action_result", None):
+            for kind, text in flash:
+                getattr(st, kind)(text)
+        if not ids:
+            st.markdown(
+                f"☑️ **Tick sessions in the table below**, then {FAV_ICON} favorite or "
+                f"{RES_ICON} reserve them here.  \n{FAV_ICON} favorite · {RES_ICON} reserved"
+            )
+            return
+        codes = ", ".join(r["code"] for r in picked[:6]) + ("…" if len(picked) > 6 else "")
+        st.markdown(f"**{len(ids)} selected:** {codes}")
+        b1, b2, b3, b4 = st.columns(4)
+        actions = [
+            (b1, FAV_ICON, "Favorite", to_fav, sched.favorite, "primary"),
+            (b2, "☆", "Unfavorite", to_unfav, sched.unfavorite, "secondary"),
+            (b3, RES_ICON, "Reserve", to_reserve, sched.reserve, "primary"),
+            (b4, "✖", "Unreserve", to_cancel, sched.cancel_reservation, "secondary"),
+        ]
+        for col, icon, name, targets, fn, kind in actions:
+            label = f"{icon} {name}" + (f" ({len(targets)})" if targets else "")
+            if col.button(
+                label,
+                disabled=not targets,
+                type=kind if targets else "secondary",
+                use_container_width=True,
+                help=None if targets else f"None of the selected sessions to {name.lower()}",
+            ):
+                run_action(name, fn, targets, picked)
+        if to_reserve:
+            st.caption("Reserved seating opens in the Events API on Oct 8, 2026.")
+
+
+def run_action(name: str, fn, targets: list[str], picked: list[dict]) -> None:
+    code = {r["sessionId"]: r["code"] for r in picked}
+    try:
+        result = fn(targets)
+    except Exception as e:
+        msgs = [("error", f"{name} failed: {e}")]
+    else:
+        msgs = []
+        if result.done:
+            names = ", ".join(code.get(i, i) for i in result.done)
+            msgs.append(("success", f"{result.action.capitalize()}: {names}"))
+        if result.note:
+            msgs.append(("warning", result.note))
+        elif result.failed:
+            why = "; ".join(f"{code.get(i, i)} ({r})" for i, r in result.failed.items())
+            msgs.append(("warning", f"Not done: {why}"))
+    st.session_state["action_result"] = msgs
+    st.session_state["table_nonce"] = st.session_state.get("table_nonce", 0) + 1
+    st.rerun()
 
 
 def index_catalog(sessions: list[Session], bar) -> None:
@@ -441,6 +452,10 @@ def catalog_tab(signed_in: bool):
 
 
 def schedule_tab(signed_in: bool):
+    """Only what is really in your AWS Events schedule: reservations, favorites and
+    personal time, day by day."""
+    from datetime import date
+
     if not signed_in:
         return st.info("Sign in to see your favorites, reservations and personal time.")
     sched_ = my_schedule()
@@ -449,27 +464,59 @@ def schedule_tab(signed_in: bool):
     except Exception as e:
         return st.error(f"Could not load your schedule: {e}")
 
-    def rows(ids):
-        out = [sched_.describe(sid) for sid in ids]
-        cols = ("code", "title", "weekday", "day", "start", "end", "venue", "level")
-        out = [{c: r.get(c) for c in cols} for r in out]
-        return sorted(out, key=lambda r: (r["day"] or "9", r["start"] or ""))
-
     c1, c2, c3 = st.columns(3)
-    c1.metric("Reserved", len(sched.reserved))
-    c2.metric("Favorites", len(sched.favorites))
-    c3.metric("Personal time", len(sched.personal_time))
-    with st.expander("One venue per day plan (favorites + reserved)"):
-        venue_plan(sched_, sched)
-    st.subheader("Reserved")
-    st.dataframe(rows(sched.reserved), hide_index=True, use_container_width=True)
-    st.subheader("Favorites")
-    st.dataframe(rows(sched.favorites), hide_index=True, use_container_width=True)
-    if sched.personal_time:
-        st.subheader("Personal time")
+    c1.metric(f"{RES_ICON} Reserved", len(sched.reserved))
+    c2.metric(f"{FAV_ICON} Favorites", len(sched.favorites))
+    c3.metric("🕑 Personal time", len(sched.personal_time))
+    days = sched_.timeline(sched)
+    if not days:
+        return st.info("Your schedule is empty: favorite or reserve sessions from the Search tab.")
+    st.caption(
+        f"{RES_ICON} reserved · {FAV_ICON} favorite · 🕑 personal time · "
+        "⚠️ overlaps another entry the same day"
+    )
+    for day, items in days.items():
+        label = (
+            "No fixed time" if day == "unscheduled"
+            else date.fromisoformat(day).strftime("%A, %b %-d")
+        )  # fmt: skip
+        n_res = sum(e["reserved"] for e in items)
+        st.subheader(f"{label}  ·  {len(items)} entries" + (f", {n_res} reserved" if n_res else ""))
+        rows = [
+            {
+                "": (RES_ICON if e["reserved"] else "")
+                + (FAV_ICON if e["favorite"] else "")
+                + ("🕑" if e["kind"] == "personal time" else ""),
+                "start": e.get("start"),
+                "end": e.get("end"),
+                "code": e.get("code"),
+                "title": e.get("title"),
+                "venue": e.get("venue"),
+                "⚠️ overlaps": ", ".join(e["overlaps"]),
+            }
+            for e in items
+        ]
         st.dataframe(
-            [json.loads(p.model_dump_json()) for p in sched.personal_time], hide_index=True
+            rows,
+            hide_index=True,
+            use_container_width=True,
+            column_config={"": st.column_config.TextColumn(width=50)},
         )
+
+
+def plans_tab(signed_in: bool):
+    if not signed_in:
+        return st.info("Sign in to plan from your favorites and reservations.")
+    sched_ = my_schedule()
+    try:
+        sched = sched_.load()
+    except Exception as e:
+        return st.error(f"Could not load your schedule: {e}")
+    st.markdown(
+        "**One venue per day** — a suggested plan built from your favorites and "
+        "reservations. It does not change your schedule."
+    )
+    venue_plan(sched_, sched)
 
 
 def venue_plan(sched_: MySchedule, sched) -> None:
@@ -497,12 +544,16 @@ def venue_plan(sched_: MySchedule, sched) -> None:
 signed_in = sidebar()
 model_caption()
 st.title("re:Invent 2026 planner")
-tab_ask, tab_search, tab_sched, tab_cat = st.tabs(["Ask", "Search", "My schedule", "Catalog"])
+tab_ask, tab_search, tab_sched, tab_plans, tab_cat = st.tabs(
+    ["Ask", "Search", "My schedule", "Plans", "Catalog"]
+)
 with tab_ask:
     ask_tab()
 with tab_search:
     search_tab(signed_in)
 with tab_sched:
     schedule_tab(signed_in)
+with tab_plans:
+    plans_tab(signed_in)
 with tab_cat:
     catalog_tab(signed_in)
