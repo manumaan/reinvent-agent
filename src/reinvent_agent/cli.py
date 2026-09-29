@@ -8,10 +8,9 @@ from pathlib import Path
 
 import typer
 
-from reinvent_agent.events_api import EventsApiClient, FileTokenStore, TokenProvider
+from reinvent_agent.events_api import EventsApiClient, FileTokenStore
 from reinvent_agent.events_api.auth import (
     AuthError,
-    SecretsManagerTokenStore,
     interactive_login,
     revoke,
 )
@@ -99,53 +98,49 @@ def config_show():
 
 
 def _client() -> EventsApiClient:
-    return EventsApiClient(TokenProvider(FileTokenStore()))
+    from reinvent_agent.accounts import token_provider
+
+    return EventsApiClient(token_provider())
 
 
 @auth_app.command("login")
 def auth_login(no_browser: bool = typer.Option(False, help="Print the URL instead of opening it")):
     """Sign in with AWS Builder ID (runs a callback server on localhost:8484)."""
-    tokens = interactive_login(FileTokenStore(), open_browser=not no_browser)
+    from reinvent_agent.accounts import token_store
+
+    # With unattended reservations on, this also refreshes the cloud copy.
+    tokens = interactive_login(token_store(), open_browser=not no_browser)
     typer.echo(f"Signed in. Access token valid until epoch {int(tokens.expires_at)}.")
 
 
 @auth_app.command("status")
 def auth_status():
-    tokens = FileTokenStore().load()
+    from reinvent_agent.accounts import token_store, unattended_enabled
+
+    tokens = token_store().load()
     if tokens is None:
         typer.echo("Not signed in.")
         raise typer.Exit(1)
     state = "expired (will refresh)" if tokens.is_expired() else "valid"
-    typer.echo(f"Access token {state}; refresh token stored at {FileTokenStore().path}")
+    where = "Secrets Manager + local file" if unattended_enabled() else str(FileTokenStore().path)
+    typer.echo(f"Access token {state}; tokens stored in {where}")
 
 
 @auth_app.command("push-secret")
-def auth_push_secret(
-    secret_id: str | None = typer.Option(
-        None, envvar="REINVENT_TOKEN_SECRET_ID", help="Defaults to the deployed stack's secret"
-    ),
-):
-    """Copy local tokens to Secrets Manager so the cloud side can act unattended.
+def auth_push_secret():
+    """Enable unattended reservations: copy tokens to Secrets Manager and share them.
 
-    After this, the cloud side owns refresh-token rotation; signing in locally
-    again later simply replaces the stored tokens.
+    From then on this machine and the cloud run use the same stored tokens, so a
+    refresh-token rotation on one side never strands the other.
     """
-    from reinvent_agent.config import settings
+    from reinvent_agent.accounts import enable_unattended
 
-    cfg = settings()
-    secret_id = secret_id or cfg.token_secret_arn
-    if not secret_id:
-        typer.echo("No token secret found; deploy ReinventAgentData or pass --secret-id.")
-        raise typer.Exit(1)
-    tokens = FileTokenStore().load()
-    if tokens is None:
-        typer.echo("Not signed in; run `reinvent-agent auth login` first.")
-        raise typer.Exit(1)
-    import boto3
-
-    client = boto3.client("secretsmanager", region_name=cfg.region)
-    SecretsManagerTokenStore(secret_id, client=client).save(tokens)
-    typer.echo("Tokens stored in Secrets Manager.")
+    try:
+        enable_unattended()
+    except RuntimeError as e:
+        typer.echo(str(e))
+        raise typer.Exit(1) from None
+    typer.echo("Tokens stored in Secrets Manager; unattended reservations enabled.")
 
 
 @auth_app.command("logout")
@@ -156,7 +151,9 @@ def auth_logout():
     refresh token. To also end the Builder ID browser session, sign out at
     https://profile.aws.amazon.com.
     """
-    store = FileTokenStore()
+    from reinvent_agent.accounts import token_store
+
+    store = token_store()
     tokens = store.load()
     if tokens is not None:
         try:
@@ -445,10 +442,145 @@ def _my_schedule(cfg):
         sessions = source.load_sessions(source.resolve(None, cfg.event_id, cfg.catalog_bucket))
     except Exception:  # no catalog yet: schedule tools fall back to GetSession
         sessions = []
-    signed_in = FileTokenStore().load() is not None
+    from reinvent_agent.accounts import token_store
+
+    signed_in = token_store().load() is not None
     return MySchedule.with_inferred_venues(
         cfg.event_id, lambda: _client() if signed_in else None, sessions
     )
+
+
+reserve_app = typer.Typer(no_args_is_help=True, help="Reservation plan and the Oct 6 run")
+app.add_typer(reserve_app, name="reserve")
+
+
+def _plan_store():
+    from reinvent_agent.accounts import plan_store
+
+    store = plan_store()
+    if store is None:
+        typer.echo("Sign in and deploy ReinventAgentData first.")
+        raise typer.Exit(1)
+    return store
+
+
+def _print_plan(plan) -> None:
+    for p in plan.primaries:
+        backups = ", ".join(b.code for b in plan.backups_for(p.session_id)) or "-"
+        typer.echo(
+            f"  P{p.priority} {p.day} {p.start}-{p.end} [{p.code}] {p.title[:60]}"
+            f"  (backups: {backups})"
+        )
+
+
+@reserve_app.command("status")
+def reserve_status():
+    """Approved plan, unattended switch, schedule and recent runs."""
+    from reinvent_agent.accounts import subscriptions, unattended_enabled
+    from reinvent_agent.reservations import SCHEDULE, format_time
+
+    store = _plan_store()
+    plan = store.approved()
+    if plan:
+        typer.echo(f"Approved plan v{plan.version}: {len(plan.primaries)} sessions to reserve")
+        _print_plan(plan)
+    else:
+        typer.echo("No approved plan. Build one: `reinvent-agent reserve build`, then approve.")
+    typer.echo(f"\nUnattended reservations: {'ON' if unattended_enabled() else 'off'}")
+    subs = subscriptions()
+    typer.echo(
+        "Notifications: "
+        + (", ".join(f"{s['endpoint']}{'' if s['confirmed'] else ' (unconfirmed)'}" for s in subs)
+           or "none (reinvent-agent reserve notify EMAIL)")
+    )  # fmt: skip
+    typer.echo("Schedule:")
+    for _name, when, action, label in SCHEDULE:
+        typer.echo(f"  {when:%a %b %-d} {format_time(when)}  {label} ({action})")
+    for r in store.runs(5):
+        typer.echo(f"Run {r['label']}: {r['status']}, {len(r['reserved'])} reserved, "
+                   f"{len(r['failed'])} not")  # fmt: skip
+
+
+@reserve_app.command("build")
+def reserve_build(
+    strategy: str = typer.Option("max_sessions", help="max_sessions or one_venue"),
+):
+    """Draft a plan from your favorites (saved as the draft; approve it to use it)."""
+    store = _plan_store()
+    ms = _my_schedule(_require_deployed_any())
+    sched = ms.load(refresh=True)
+    from reinvent_agent.reservation_plan import build_plan
+
+    ids = list(dict.fromkeys(sched.reserved + sched.favorites))
+    plan = build_plan(ms.event_id, ms.sessions(ids), ms.venue_of, sched.reserved, strategy=strategy)
+    store.save_draft(plan)
+    typer.echo(f"Draft: {len(plan.primaries)} to reserve, "
+               f"{len(plan.items) - len(plan.primaries)} backups")  # fmt: skip
+    _print_plan(plan)
+    typer.echo("Approve with `reinvent-agent reserve approve` (or edit it in the app).")
+
+
+@reserve_app.command("approve")
+def reserve_approve():
+    """Approve the current draft; the scheduled runs use the approved plan."""
+    store = _plan_store()
+    draft = store.draft()
+    if draft is None:
+        typer.echo("No draft. Run `reinvent-agent reserve build` first.")
+        raise typer.Exit(1)
+    try:
+        plan = store.approve(draft)
+    except ValueError as e:
+        typer.echo(f"Can't approve: {e}")
+        raise typer.Exit(1) from None
+    typer.echo(f"Approved plan v{plan.version} ({len(plan.primaries)} sessions).")
+
+
+@reserve_app.command("preflight")
+def reserve_preflight(cloud: bool = typer.Option(False, help="Run it in the deployed Lambda")):
+    """Check that the run can sign in as you (cloud: also sends the notification)."""
+    if cloud:
+        from reinvent_agent.accounts import invoke_cloud
+
+        typer.echo(invoke_cloud("preflight", "manual check"))
+        return
+    from reinvent_agent.reservation_runner import ReservationRunner
+
+    ok, msg = ReservationRunner(_client(), DEFAULT_EVENT).preflight(notify=False)
+    typer.echo(msg)
+    if not ok:
+        raise typer.Exit(1)
+
+
+@reserve_app.command("run")
+def reserve_run(
+    wait_minutes: float = typer.Option(0, help="Keep polling this long if still closed"),
+):
+    """Reserve the approved plan now from this machine (manual fallback)."""
+    import time
+
+    from reinvent_agent.reservation_runner import ReservationRunner
+
+    store = _plan_store()
+    runner = ReservationRunner(_client(), DEFAULT_EVENT)
+    report = runner.run(store.approved(), "manual", time.time() + wait_minutes * 60)
+    store.save_run(report.to_dict())
+    typer.echo(report.text())
+
+
+@reserve_app.command("notify")
+def reserve_notify(email: str):
+    """Email notifications for the runs (confirm the link AWS sends you)."""
+    from reinvent_agent.accounts import subscribe
+
+    subscribe(email)
+    typer.echo(f"Subscribed {email}: click the confirmation link in the email from AWS.")
+
+
+def _require_deployed_any():
+    from reinvent_agent.config import settings
+
+    return settings()
 
 
 @app.command("ask")

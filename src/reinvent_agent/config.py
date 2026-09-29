@@ -16,7 +16,7 @@ from pathlib import Path
 from reinvent_agent.llm import PROVIDERS, get_provider
 
 REGION = "us-east-1"
-STACKS = ("ReinventAgentData", "ReinventAgentSearch")
+STACKS = ("ReinventAgentData", "ReinventAgentSearch", "ReinventAgentReservations")
 API_KEY_PLACEHOLDER = "UNSET"  # initial value of the AnthropicApiKey secret
 DEFAULT_MODELS = {name: p.model_id(p.default_model) for name, p in PROVIDERS.items()}
 
@@ -52,6 +52,9 @@ class Settings:
     vector_index: str
     sessions_table: str | None
     token_secret_arn: str | None
+    plans_table: str | None
+    reservation_topic_arn: str | None
+    reservation_function: str | None
     anthropic_key_secret_arn: str | None
     # A key of llm.PROVIDERS: "bedrock" (Claude on Amazon Bedrock, AWS credentials) or
     # "anthropic" (Claude API key). Embeddings always use Bedrock Titan.
@@ -134,6 +137,9 @@ def settings() -> Settings:
         vector_index=env("REINVENT_VECTOR_INDEX") or outputs.get("VectorIndexName", "sessions"),
         sessions_table=env("REINVENT_SESSIONS_TABLE") or outputs.get("SessionsTableName"),
         token_secret_arn=env("REINVENT_TOKEN_SECRET_ID") or outputs.get("TokenSecretArn"),
+        plans_table=env("REINVENT_PLANS_TABLE") or outputs.get("PlansTableName"),
+        reservation_topic_arn=outputs.get("ReservationTopicArn"),
+        reservation_function=outputs.get("ReservationFunctionName"),
         anthropic_key_secret_arn=key_secret,
         llm_provider=provider,
         model=env("REINVENT_MODEL") or llm.model_id(saved_model or llm.default_model),

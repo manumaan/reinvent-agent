@@ -121,7 +121,7 @@ def test_writes_report_outcomes_and_refresh_snapshot(tmp_path):
 
     client.closed = True
     r = ms.reserve(["SVS401"])
-    assert r.note and "Oct 8" in r.note and r.failed == {"SVS401": "reservations not open"}
+    assert r.note and "October 6" in r.note and r.failed == {"SVS401": "reservations not open"}
 
 
 def test_writes_need_sign_in(tmp_path):

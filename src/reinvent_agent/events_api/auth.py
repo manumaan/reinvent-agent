@@ -10,7 +10,7 @@ so the interactive sign-in must run on the attendee's machine. After that:
 * refreshing does NOT extend the Builder ID sign-in session, which has its own
   lifetime, so a long-running process eventually needs a fresh interactive sign-in.
 
-That is what makes the unattended Oct 8 reservation run possible: sign in locally
+That is what makes the unattended Oct 6 reservation run possible: sign in locally
 shortly before, push the tokens to a shared ``TokenStore`` (Secrets Manager), and
 let the cloud side refresh -- always writing a rotated refresh token back.
 """
@@ -18,6 +18,7 @@ let the cloud side refresh -- always writing a rotated refresh token back.
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -169,32 +170,82 @@ class SecretsManagerTokenStore:
         self.client.put_secret_value(SecretId=self.secret_id, SecretString="{}")
 
 
+class SyncedTokenStore:
+    """Secrets Manager as the source of truth, mirrored to the local file.
+
+    Used once unattended reservations are enabled: the laptop and the cloud job then
+    share one refresh token, so both must read and write the same (shared) copy, or a
+    rotation on one side would strand the other.
+    """
+
+    def __init__(self, shared: TokenStore, local: TokenStore):
+        self.shared, self.local = shared, local
+
+    def load(self) -> Tokens | None:
+        return self.shared.load() or self.local.load()
+
+    def save(self, tokens: Tokens) -> None:
+        self.shared.save(tokens)
+        self.local.save(tokens)
+
+    def clear(self) -> None:
+        self.shared.clear()
+        self.local.clear()
+
+
+def token_subject(access_token: str) -> str | None:
+    """The ``sub`` claim of a JWT access token (not verified; used only as a key)."""
+    try:
+        payload = access_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload)).get("sub")
+    except (IndexError, ValueError, AttributeError):
+        return None
+
+
 # --- token provider ---------------------------------------------------------
 
 
 class TokenProvider:
-    """Hands out a valid access token, refreshing (and persisting rotation) as needed."""
+    """Hands out a valid access token, refreshing (and persisting rotation) as needed.
 
-    def __init__(self, store: TokenStore, http: httpx.Client | None = None):
+    ``shared_lock`` (a context-manager factory) serializes refreshes across processes,
+    e.g. the laptop and the reservation Lambda: rotation means two concurrent refreshes
+    with the same refresh token can invalidate each other. Inside the lock the store is
+    re-read, so a refresh another process just did is reused instead of repeated.
+    """
+
+    def __init__(self, store: TokenStore, http: httpx.Client | None = None, shared_lock=None):
         self.store = store
         self.http = http or httpx.Client(timeout=30)
         self._lock = threading.Lock()
+        self._shared_lock = shared_lock or contextlib.nullcontext
+
+    def _load(self) -> Tokens:
+        tokens = self.store.load()
+        if tokens is None:
+            raise AuthError("not signed in; run `reinvent-agent auth login`")
+        return tokens
 
     def access_token(self) -> str:
         with self._lock:
-            tokens = self.store.load()
-            if tokens is None:
-                raise AuthError("not signed in; run `reinvent-agent auth login`")
-            if tokens.is_expired():
-                tokens = self._refresh(tokens)
-            return tokens.access_token
+            tokens = self._load()
+            if not tokens.is_expired():
+                return tokens.access_token
+            with self._shared_lock():
+                tokens = self._load()
+                if tokens.is_expired():
+                    tokens = self._refresh(tokens)
+                return tokens.access_token
 
     def force_refresh(self) -> str:
         with self._lock:
-            tokens = self.store.load()
-            if tokens is None:
-                raise AuthError("not signed in; run `reinvent-agent auth login`")
-            return self._refresh(tokens).access_token
+            stale = self._load().access_token
+            with self._shared_lock():
+                tokens = self._load()
+                if tokens.access_token != stale:  # another process already refreshed
+                    return tokens.access_token
+                return self._refresh(tokens).access_token
 
     def _refresh(self, tokens: Tokens) -> Tokens:
         resp = self.http.post(

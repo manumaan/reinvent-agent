@@ -81,3 +81,32 @@ def test_index_config_matches_application():
     from reinvent_agent.catalog.embeddings import DIMENSION as APP_DIM
 
     assert (DIMENSION, NON_FILTERABLE_KEYS) == (APP_DIM, APP_KEYS)
+
+
+def test_reservation_stack_schedules_lambda_and_topic():
+    from stacks.reservation_stack import ReservationStack
+
+    from reinvent_agent.reservations import SCHEDULE
+
+    app = App(context={"aws:cdk:bundling-stacks": []})  # don't build the Lambda package
+    data = DataStack(app, "D")
+    t = Template.from_stack(ReservationStack(app, "R", data=data))
+    t.has_resource_properties(
+        "AWS::Lambda::Function",
+        {
+            "Handler": "reinvent_agent.lambda_handler.handler",
+            "Timeout": 900,
+            "ReservedConcurrentExecutions": 1,
+        },
+    )
+    t.resource_count_is("AWS::SNS::Topic", 1)
+    t.resource_count_is("AWS::Scheduler::Schedule", len(SCHEDULE))
+    t.has_resource_properties(
+        "AWS::Scheduler::Schedule",
+        {
+            "ScheduleExpression": "at(2026-10-06T08:58:00)",
+            "ScheduleExpressionTimezone": "America/Los_Angeles",
+            "FlexibleTimeWindow": {"Mode": "OFF"},
+            "Target": Match.object_like({"Input": '{"action": "run", "label": "first release"}'}),
+        },
+    )

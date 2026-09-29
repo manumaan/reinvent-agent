@@ -155,8 +155,10 @@ class MySchedule:
         finally:
             self.refresh()
 
-    def reserve(self, ids: list[str]) -> WriteResult:
+    def reserve(self, ids: list[str], tz: str | None = None) -> WriteResult:
+        """``tz``: the viewer's timezone, for the release times in the not-open note."""
         from reinvent_agent.events_api.client import OperationClosedError
+        from reinvent_agent.reservations import release_note
 
         client = self._client_or_raise()
         try:
@@ -165,8 +167,9 @@ class MySchedule:
             return WriteResult(
                 "reserve",
                 failed={sid: "reservations not open" for sid in ids},
-                note="Reservations aren't open yet: the Events API opens reserved seating "
-                "on Oct 8, 2026. Favorite the sessions for now.",
+                note="Reservations aren't open yet. "
+                + (release_note(tz) or "Try again shortly.")
+                + " Favorite the sessions for now.",
             )
         finally:
             self.refresh()

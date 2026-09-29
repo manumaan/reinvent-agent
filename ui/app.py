@@ -13,18 +13,20 @@ import time
 
 import streamlit as st
 
+from reinvent_agent import accounts
 from reinvent_agent.catalog import source
 from reinvent_agent.config import settings
-from reinvent_agent.events_api import EventsApiClient, FileTokenStore, Session, TokenProvider
+from reinvent_agent.events_api import EventsApiClient, Session
 from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
 from reinvent_agent.llm import get_provider
+from reinvent_agent.reservations import ReservationInfo, release_note
 from reinvent_agent.schedule import MySchedule
 
-FAV_ICON, RES_ICON = "⭐", "🎟️"
+FAV_ICON, RES_ICON, NO_RES_ICON = "⭐", "🎟️", "🚫"
 
 st.set_page_config(page_title="re:Invent planner", page_icon="🗓️", layout="wide")
 cfg = settings()
-store = FileTokenStore()
+store = accounts.token_store(cfg)  # shared with the cloud run once unattended is on
 
 
 # --- sign-in ------------------------------------------------------------------
@@ -88,20 +90,19 @@ def sidebar() -> bool:
     login["status"] = "idle"
     st.sidebar.success("Signed in")
     schedule_status(refresh=just_signed_in)
-    if cfg.token_secret_arn and st.sidebar.button("Enable unattended reservations"):
-        import boto3
-
-        from reinvent_agent.events_api.auth import SecretsManagerTokenStore
-
-        client = boto3.client("secretsmanager", region_name=cfg.region)
-        SecretsManagerTokenStore(cfg.token_secret_arn, client=client).save(tokens)
-        st.sidebar.success("Tokens stored in Secrets Manager for the Oct 8 reservation run.")
+    st.sidebar.caption(
+        "Unattended reservations: "
+        + ("**on**" if accounts.unattended_enabled() else "off")
+        + " (Plans tab)"
+    )
     if st.sidebar.button("Sign out"):
         try:
             revoke(tokens.refresh_token)
         except AuthError as e:
             st.sidebar.warning(str(e))
-        store.clear()
+        store.clear()  # also removes the cloud copy when unattended is on
+        if accounts.unattended_enabled():
+            accounts.disable_unattended(cfg)
         my_schedule().path.unlink(missing_ok=True)
         st.rerun()
     st.sidebar.caption(
@@ -142,7 +143,7 @@ def search_backend():
 
 
 def events_client() -> EventsApiClient | None:
-    return EventsApiClient(TokenProvider(store)) if store.load() else None
+    return accounts.events_client(cfg)
 
 
 @st.cache_resource
@@ -169,6 +170,11 @@ def catalog_docs():
     from reinvent_agent.catalog.ingest import build_documents
 
     return build_documents(list(local_catalog().values()), cfg.event_id)
+
+
+@st.cache_resource
+def reservation_info() -> ReservationInfo:
+    return ReservationInfo(local_catalog().values())
 
 
 @st.cache_data
@@ -273,7 +279,7 @@ def search_tab(signed_in: bool):
     rows = [
         {
             "fav": FAV_ICON if r["sessionId"] in favorites else "",
-            "res": RES_ICON if r["sessionId"] in reserved else "",
+            "res": reservation_icon(r["sessionId"], reserved),
             **{c: r.get(c) for c in cols},
         }
         for r in results
@@ -292,7 +298,9 @@ def search_tab(signed_in: bool):
         use_container_width=True,
         column_config={
             "fav": st.column_config.TextColumn(FAV_ICON, width=40, help="Favorited"),
-            "res": st.column_config.TextColumn(RES_ICON, width=40, help="Reserved"),
+            "res": st.column_config.TextColumn(
+                RES_ICON, width=40, help=f"{RES_ICON} reserved · {NO_RES_ICON} no reserved seating"
+            ),
         },
         on_select="rerun" if signed_in else "ignore",
         selection_mode="multi-row",
@@ -309,7 +317,9 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
     to_unfav = [i for i in ids if i in favorites]
     # The catalog's isReservable can be stale (false everywhere before seating opens),
     # so let the API decide; it answers 409 (not open yet) or sessionNotReservable.
-    to_reserve = [i for i in ids if i not in reserved]
+    info = reservation_info()
+    no_seating = [r for r in picked if not info.can_reserve(r["sessionId"])]
+    to_reserve = [i for i in ids if i not in reserved and info.can_reserve(i)]
     to_cancel = [i for i in ids if i in reserved]
     sched = my_schedule()
 
@@ -320,7 +330,8 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
         if not ids:
             st.markdown(
                 f"☑️ **Tick sessions in the table below**, then {FAV_ICON} favorite or "
-                f"{RES_ICON} reserve them here.  \n{FAV_ICON} favorite · {RES_ICON} reserved"
+                f"{RES_ICON} reserve them here.  \n{FAV_ICON} favorite · {RES_ICON} reserved · "
+                f"{NO_RES_ICON} no reserved seating"
             )
             return
         codes = ", ".join(r["code"] for r in picked[:6]) + ("…" if len(picked) > 6 else "")
@@ -329,7 +340,7 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
         actions = [
             (b1, FAV_ICON, "Favorite", to_fav, sched.favorite, "primary"),
             (b2, "☆", "Unfavorite", to_unfav, sched.unfavorite, "secondary"),
-            (b3, RES_ICON, "Reserve", to_reserve, sched.reserve, "primary"),
+            (b3, RES_ICON, "Reserve", to_reserve, reserve_in_viewer_tz, "primary"),
             (b4, "✖", "Unreserve", to_cancel, sched.cancel_reservation, "secondary"),
         ]
         for col, icon, name, targets, fn, kind in actions:
@@ -342,8 +353,35 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
                 help=None if targets else f"None of the selected sessions to {name.lower()}",
             ):
                 run_action(name, fn, targets, picked)
-        if to_reserve:
-            st.caption("Reserved seating opens in the Events API on Oct 8, 2026.")
+        if no_seating:
+            names = ", ".join(r["code"] for r in no_seating)
+            st.warning(
+                f"{NO_RES_ICON} Some of the sessions you have selected do not have reserved "
+                f"seating: {names}."
+                if len(no_seating) < len(picked)
+                else f"{NO_RES_ICON} None of the sessions you have selected have reserved "
+                f"seating ({names})."
+            )
+        if to_reserve and (note := release_note(viewer_tz())):
+            st.caption(f"🗓️ {note}")
+
+
+def viewer_tz() -> str | None:
+    """The browser's IANA timezone (e.g. Asia/Kolkata), if Streamlit knows it."""
+    try:
+        return st.context.timezone
+    except Exception:
+        return None
+
+
+def reserve_in_viewer_tz(ids: list[str]):
+    return my_schedule().reserve(ids, tz=viewer_tz())
+
+
+def reservation_icon(session_id: str, reserved: set[str]) -> str:
+    if session_id in reserved:
+        return RES_ICON
+    return "" if reservation_info().can_reserve(session_id) else NO_RES_ICON
 
 
 def run_action(name: str, fn, targets: list[str], picked: list[dict]) -> None:
@@ -399,7 +437,7 @@ def refresh_catalog(do_index: bool) -> None:
     def on_page(n, total):
         bar.progress(min(n / total, 1.0) if total else 0.0, text=f"Downloaded {n} sessions…")
 
-    client = EventsApiClient(TokenProvider(store))
+    client = accounts.events_client(cfg)
     items, total = source.download_catalog(client, cfg.event_id, progress=on_page)
     body = source.to_jsonl(items)
     path = source.local_path(cfg.event_id)
@@ -410,6 +448,7 @@ def refresh_catalog(do_index: bool) -> None:
         st.success(f"Uploaded to `{source.upload(body, cfg.catalog_bucket, cfg.event_id)}`.")
     local_catalog.clear()
     catalog_docs.clear()
+    reservation_info.clear()
     my_schedule.clear()
     qa_backend.clear()
     if do_index and cfg.vector_bucket:
@@ -464,6 +503,8 @@ def schedule_tab(signed_in: bool):
     except Exception as e:
         return st.error(f"Could not load your schedule: {e}")
 
+    if note := release_note(viewer_tz()):
+        st.info(f"🗓️ {note}")
     c1, c2, c3 = st.columns(3)
     c1.metric(f"{RES_ICON} Reserved", len(sched.reserved))
     c2.metric(f"{FAV_ICON} Favorites", len(sched.favorites))
@@ -512,11 +553,256 @@ def plans_tab(signed_in: bool):
         sched = sched_.load()
     except Exception as e:
         return st.error(f"Could not load your schedule: {e}")
-    st.markdown(
-        "**One venue per day** — a suggested plan built from your favorites and "
-        "reservations. It does not change your schedule."
+    pstore = accounts.plan_store(cfg)
+    if pstore is None:
+        return st.warning("Deploy ReinventAgentData to store reservation plans.")
+
+    st.subheader(f"{RES_ICON} Reservation plan for October 6")
+    if note := release_note(viewer_tz()):
+        st.info(f"🗓️ {note}")
+    flash()
+    approved = pstore.approved()
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Approved plan", f"v{approved.version}" if approved else "none")
+    c2.metric("Sessions to reserve", len(approved.primaries) if approved else 0)
+    c3.metric("Unattended run", "on" if accounts.unattended_enabled() else "off")
+
+    with st.expander("1 · Build and approve the plan", expanded=approved is None):
+        plan_editor(pstore, sched_, sched)
+    if approved:
+        with st.expander(f"2 · Approved plan v{approved.version}", expanded=True):
+            show_plan(approved)
+    with st.expander("3 · Unattended run and notifications", expanded=bool(approved)):
+        unattended_section(approved)
+    runs = pstore.runs(10)
+    if runs:
+        with st.expander(f"4 · Run history ({len(runs)})"):
+            for r in runs:
+                when = time.strftime("%b %d %H:%M", time.localtime(r["started_at"]))
+                st.markdown(
+                    f"**{when} · {r['label']}** — {r['status']}: {len(r['reserved'])} reserved, "
+                    f"{len(r['failed'])} not"
+                )
+                for n in r["notes"]:
+                    st.caption(n)
+                if r["reserved"] or r["failed"]:
+                    st.dataframe(
+                        [{"": "✅", "code": x["code"], "title": x["title"], "how": x["how"]}
+                         for x in r["reserved"]]
+                        + [{"": "❌", "code": x["code"], "title": x["title"], "how": x["reason"]}
+                           for x in r["failed"]],
+                        hide_index=True,
+                        use_container_width=True,
+                    )  # fmt: skip
+    with st.expander("One venue per day (suggestion only)"):
+        venue_plan(sched_, sched)
+
+
+def flash() -> None:
+    for kind, text in st.session_state.pop("plans_flash", []):
+        getattr(st, kind)(text)
+
+
+def set_flash(*msgs) -> None:
+    st.session_state["plans_flash"] = list(msgs)
+    st.rerun()
+
+
+ROLE_LABELS = {"primary": f"{RES_ICON} reserve", "backup": "↪ backup", "skip": "✖ skip"}
+
+
+def plan_editor(pstore, sched_: MySchedule, sched) -> None:
+    from reinvent_agent.reservation_plan import (
+        PRIORITIES,
+        STRATEGIES,
+        ReservationPlan,
+        build_plan,
     )
-    venue_plan(sched_, sched)
+
+    st.markdown(
+        "Pick what to reserve. **Reserve** rows must not overlap each other; **backup** rows "
+        "are tried, in order, when an overlapping session is full or can't be reserved. "
+        "**Priority** sets the order: seats go to whoever asks first."
+    )
+    c1, c2 = st.columns([3, 1])
+    strategy = c1.radio("Start from", list(STRATEGIES), format_func=STRATEGIES.get, horizontal=True)
+    draft = pstore.draft()
+    if c2.button("New draft from favorites", use_container_width=True) or draft is None:
+        ids = list(dict.fromkeys(sched.reserved + sched.favorites))
+        draft = build_plan(
+            cfg.event_id, sched_.sessions(ids), sched_.venue_of, sched.reserved, strategy
+        )
+        pstore.save_draft(draft)
+        st.session_state.pop("plan_editor", None)
+
+    rows = [
+        {
+            "action": ROLE_LABELS[i.role],
+            "priority": PRIORITIES[i.priority],
+            "day": i.day,
+            "start": i.start,
+            "end": i.end,
+            "code": i.code,
+            "title": i.title,
+            "venue": i.venue,
+            "backup for": ", ".join(draft.item(p).code for p in i.backup_for if draft.item(p)),
+        }
+        for i in draft.items
+    ]
+    edited = st.data_editor(
+        rows,
+        key="plan_editor",
+        hide_index=True,
+        use_container_width=True,
+        disabled=["day", "start", "end", "code", "title", "venue", "backup for"],
+        column_config={
+            "action": st.column_config.SelectboxColumn(
+                options=list(ROLE_LABELS.values()), required=True, width="small"
+            ),
+            "priority": st.column_config.SelectboxColumn(
+                options=list(PRIORITIES.values()), required=True, width="small"
+            ),
+        },
+    )
+    by_label = {v: k for k, v in ROLE_LABELS.items()}
+    by_prio = {v: k for k, v in PRIORITIES.items()}
+    items = []
+    for item, row in zip(draft.items, edited, strict=True):
+        role = by_label[row["action"]]
+        if role == "skip":
+            continue
+        item.role, item.priority = role, by_prio[row["priority"]]
+        items.append(item)
+    plan = ReservationPlan(event_id=cfg.event_id, items=items, strategy=draft.strategy)
+    plan.link_backups()
+
+    problems = plan.problems()
+    for p in problems:
+        st.error(p)
+    orphans = plan.orphan_backups()
+    if orphans:
+        st.warning(
+            "These backups don't overlap any session you reserve, so they'd never be used: "
+            + ", ".join(o.code for o in orphans)
+        )
+    st.caption(
+        f"{len(plan.primaries)} to reserve · "
+        f"{sum(1 for i in plan.items if i.role == 'backup')} backups"
+    )
+    b1, b2 = st.columns(2)
+    if b1.button("Save draft", use_container_width=True):
+        pstore.save_draft(plan)
+        set_flash(("success", "Draft saved."))
+    if b2.button(
+        f"✅ Approve plan ({len(plan.primaries)} sessions)",
+        type="primary",
+        disabled=bool(problems),
+        use_container_width=True,
+    ):
+        pstore.save_draft(plan)
+        v = pstore.approve(plan)
+        set_flash(("success", f"Plan v{v.version} approved. The scheduled runs will use it."))
+
+
+def show_plan(plan) -> None:
+    from reinvent_agent.reservation_plan import PRIORITIES
+
+    days: dict[str, list] = {}
+    for p in plan.primaries:
+        days.setdefault(p.day or "unscheduled", []).append(p)
+    st.caption(
+        f"Approved {time.strftime('%b %d %H:%M', time.localtime(plan.approved_at))}. "
+        "Reserved in priority order when seats release; backups used if a session is full."
+    )
+    for day in sorted(days):
+        st.markdown(f"**{day}**")
+        st.dataframe(
+            [
+                {
+                    "priority": PRIORITIES[p.priority],
+                    "start": p.start,
+                    "end": p.end,
+                    "code": p.code,
+                    "title": p.title,
+                    "venue": p.venue,
+                    "backups": ", ".join(b.code for b in plan.backups_for(p.session_id)),
+                }
+                for p in sorted(days[day], key=lambda p: p.start or "")
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+def unattended_section(approved) -> None:
+    from reinvent_agent.reservations import SCHEDULE, format_time
+
+    tz = viewer_tz()
+    st.markdown(
+        "The cloud job signs in with a copy of your Builder ID tokens (Secrets Manager) and "
+        "runs at these times, even with your laptop closed:"
+    )
+    st.dataframe(
+        [
+            {"when": f"{when:%a %b %-d}, {format_time(when, tz)}", "what": label,
+             "does": "reserve the approved plan" if action == "run" else "check sign-in + plan"}
+            for _n, when, action, label in SCHEDULE
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )  # fmt: skip
+    if not cfg.reservation_function:
+        return st.warning(
+            "The scheduled job isn't deployed yet: run `cd infra && npx aws-cdk@2 deploy --all`."
+        )
+    st.caption(
+        "Sign in again on the evening of Oct 5 (PDT) and re-enable: the Builder ID session "
+        "has its own lifetime, so tokens from weeks earlier may no longer work."
+    )
+    c1, c2 = st.columns(2)
+    if accounts.unattended_enabled():
+        if c1.button("Refresh cloud sign-in", use_container_width=True):
+            accounts.enable_unattended(cfg)
+            set_flash(("success", "Cloud copy of your sign-in refreshed."))
+        if c2.button("Turn off unattended run", use_container_width=True):
+            accounts.disable_unattended(cfg)
+            set_flash(("info", "Unattended run off; the cloud copy of your sign-in was removed."))
+    elif c1.button("Enable unattended run", type="primary", use_container_width=True):
+        accounts.enable_unattended(cfg)
+        set_flash(("success", "Enabled. Your sign-in is now shared with the scheduled job."))
+
+    st.markdown("**Notifications**")
+    subs = accounts.subscriptions(cfg)
+    for sub in subs:
+        st.caption(
+            f"📧 {sub['endpoint']}" + ("" if sub["confirmed"] else " — confirm the email from AWS")
+        )
+    e1, e2 = st.columns([3, 1])
+    email = e1.text_input("Email for run results", label_visibility="collapsed",
+                          placeholder="you@example.com")  # fmt: skip
+    if e2.button("Subscribe", use_container_width=True, disabled="@" not in email):
+        accounts.subscribe(email.strip(), cfg)
+        set_flash(("success", f"Check {email} for AWS's confirmation link."))
+
+    st.markdown("**Test now**")
+    t1, t2 = st.columns(2)
+    check_help = "Invokes the Lambda: signs in as you, reads your schedule, emails you."
+    if t1.button("Run the cloud check now", use_container_width=True, help=check_help):
+        try:
+            result = accounts.invoke_cloud("preflight", "manual check", cfg)
+        except Exception as e:
+            set_flash(("error", f"Cloud check failed: {e}"))
+        set_flash(("success" if result.get("ok") else "error", result.get("message", str(result))))
+    if t2.button(f"{RES_ICON} Reserve the plan now (this computer)", use_container_width=True,
+                 disabled=approved is None,
+                 help="Manual fallback: runs the same logic here, once."):  # fmt: skip
+        from reinvent_agent.reservation_runner import ReservationRunner
+
+        runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id)
+        report = runner.run(accounts.plan_store(cfg).approved(), "manual", time.time())
+        accounts.plan_store(cfg).save_run(report.to_dict())
+        my_schedule().refresh()
+        set_flash(("info", report.text()))
 
 
 def venue_plan(sched_: MySchedule, sched) -> None:
