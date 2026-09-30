@@ -59,13 +59,23 @@ def handler(event, context):
         return {"ok": ok, "message": msg, "plan_version": plan.version if plan else None}
 
     if action == "run":
+        from reinvent_agent.reservation_plan import LeaseBusy, dynamo_lease
+
         release = release_for(label)
         deadline = release + timedelta(minutes=OPEN_GRACE_MINUTES)
         # Leave 2 minutes of Lambda time for reading back, saving and notifying.
         remaining = context.get_remaining_time_in_millis() / 1000 if context else 900
         deadline_ts = min(deadline.timestamp(), runner.clock() + remaining - 120)
-        report = runner.run(store.approved(), label, deadline_ts)
-        store.save_run(report.to_dict())
+        # One run at a time (a Lambda lives at most 15 minutes, so the lease does too).
+        run_lease = dynamo_lease(store.table, name="reservation-run", ttl=900, wait=0)
+        try:
+            with run_lease():
+                report = runner.run(store.approved(), label, deadline_ts)
+                store.save_run(report.to_dict())
+        except LeaseBusy:
+            msg = "Another reservation run is already in progress; this one stopped."
+            runner.notifier.notify(f"re:Invent reservations ({label}): skipped", msg)
+            return {"ok": False, "status": "busy"}
         return {"ok": report.status == "done", "status": report.status}
 
     raise ValueError(f"unknown action {action!r}")

@@ -96,7 +96,8 @@ def test_reservation_stack_schedules_lambda_and_topic():
         {
             "Handler": "reinvent_agent.lambda_handler.handler",
             "Timeout": 900,
-            "ReservedConcurrentExecutions": 1,
+            # New accounts can't reserve concurrency (10 total, all unreserved).
+            "ReservedConcurrentExecutions": Match.absent(),
         },
     )
     t.resource_count_is("AWS::SNS::Topic", 1)

@@ -93,7 +93,8 @@ class ReservationStack(Stack):
             ),
             timeout=Duration.minutes(15),  # polls until release, then paces 30 sessions/min
             memory_size=512,
-            reserved_concurrent_executions=1,  # one writer: never two runs at once
+            # No reserved concurrency: new accounts have a 10-execution limit that must
+            # stay unreserved. One run at a time is enforced by a DynamoDB lease instead.
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "TOKEN_SECRET_ARN": data.token_secret.secret_arn,

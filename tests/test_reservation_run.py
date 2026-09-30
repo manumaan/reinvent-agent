@@ -316,3 +316,14 @@ def test_lambda_handler_run_uses_approved_plan(monkeypatch):
     out = lambda_handler.handler({"action": "run", "label": "first release"}, None)
     assert out == {"ok": True, "status": "done"} and api.held == ["A"]
     assert store.runs()[0]["reserved"][0]["code"] == "A"
+
+    # A second run while one holds the lease stops instead of reserving twice.
+    import time as _time
+
+    store.table.put_item(
+        Item={"userId": "_lock", "sk": "reservation-run", "owner": "x",
+              "expires": int(_time.time()) + 600}
+    )  # fmt: skip
+    busy = lambda_handler.handler({"action": "run", "label": "first release"}, None)
+    assert busy == {"ok": False, "status": "busy"}
+    assert notifier.messages[-1][0].endswith("skipped")
