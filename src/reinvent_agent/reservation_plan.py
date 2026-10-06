@@ -238,6 +238,13 @@ class PlanStore:
         self.clear_flag("api-run-done")  # a newly approved plan gets reserved again
         return plan
 
+    def profile_json(self) -> str | None:
+        """The attendee profile (see ``reinvent_agent.profile``), as JSON."""
+        return self._get(f"profile#{self.event_id}")
+
+    def save_profile_json(self, body: str) -> None:
+        self._put(f"profile#{self.event_id}", body)
+
     def flag(self, name: str) -> float | None:
         """Epoch seconds a flag was set (e.g. "api-run-done", "alert"), or None."""
         body = self._get(f"flag#{self.event_id}#{name}")

@@ -23,6 +23,8 @@ def test_renders_signed_out_without_deployment(app):
     assert not at.exception
     assert at.title[0].value == "re:Invent 2026 planner"
     assert [t.label for t in at.tabs] == [
+        "👤 Profile",
+        "⭐ Short list",
         "Ask",
         "Search",
         "My schedule",

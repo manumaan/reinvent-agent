@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import Counter
+from collections.abc import Callable
 from contextlib import suppress
-from datetime import date
+from datetime import date, timedelta
 
 import streamlit as st
 
@@ -225,49 +227,279 @@ def ask_tab():
         ]
 
 
-def search_tab(signed_in: bool):
-    from datetime import date
+# --- profile and short list --------------------------------------------------------
 
-    from reinvent_agent.catalog.search import SearchFilters, browse
 
-    docs = catalog_docs()
-    meta = [d.metadata for d in docs]
-    q = st.text_input(
-        "Search sessions",
-        placeholder="serverless event-driven architecture (leave empty to browse all)",
-    )
-    c1, c2, c3, c4 = st.columns(4)
-    min_level = c1.selectbox("Min level", [None, 100, 200, 300, 400, 500])
-    days = c2.multiselect(
-        "Days",
-        sorted({m["day"] for m in meta if "day" in m}),
-        format_func=lambda d: date.fromisoformat(d).strftime("%a %b %-d"),
-    )
-    venues = c3.multiselect("Venues", sorted({m["venue"] for m in meta}))
-    types = c4.multiselect("Types", sorted({m["type"] for m in meta}))
-    filters = SearchFilters(
-        event_id=cfg.event_id, min_level=min_level, days=days, venues=venues, types=types
-    )
+def current_profile():
+    from reinvent_agent.profile import Profile, load_local
 
-    if q:
-        search = search_backend()
-        if search is None:
-            return not_deployed()
-        # Selecting rows reruns the script; keep results so we don't re-embed the query.
-        key = (q, min_level, tuple(days), tuple(venues), tuple(types))
-        cached = st.session_state.get("search_results")
-        if not cached or cached[0] != key:
-            cached = (key, [r.summary() for r in search.search(q, filters, k=25)])
-            st.session_state["search_results"] = cached
-        results = cached[1]
-        st.caption(f"Top {len(results)} matches for “{q}”.")
+    if "profile" not in st.session_state:
+        prof = None
+        with suppress(Exception):  # not signed in / not deployed: fall back to local
+            pstore = accounts.plan_store(cfg)
+            if pstore and (body := pstore.profile_json()):
+                prof = Profile.from_json(body)
+        st.session_state["profile"] = prof or load_local(cfg.event_id) or Profile()
+    return st.session_state["profile"]
+
+
+def profile_tab(signed_in: bool):
+    from reinvent_agent.catalog import facets as fx
+    from reinvent_agent.profile import EXPERIENCE, Profile, save_local
+
+    catalog = local_catalog()
+    if not catalog:
+        return st.info("Download the catalog first (Catalog tab): the choices come from it.")
+    sessions = list(catalog.values())
+    venue_of = my_schedule().venue_of
+    prof = current_profile()
+
+    def choices(name: str) -> tuple[list, Callable]:
+        counts = fx.options(sessions, name, venue_of)
+        values = sorted(counts) if name == "Day" else sorted(counts, key=lambda v: (-counts[v], v))
+        if name == "Day":
+            return values, lambda v: f"{date.fromisoformat(v):%a %b %-d} ({counts[v]})"
+        return values, lambda v: f"{v} ({counts[v]})"
+
+    def multi(label: str, facet: str, current: list, help: str | None = None) -> list:
+        values, fmt = choices(facet)
+        return st.multiselect(
+            label,
+            values,
+            default=[v for v in current if v in values],
+            format_func=fmt,
+            placeholder="Any",
+            help=help,
+        )
+
+    st.subheader("👤 Your profile")
+    st.caption(
+        f"Answer as many as you like ({prof.answered()} of 15 answered). Choices come from "
+        "the session catalog, with session counts. The **Short list** tab picks sessions "
+        "from this profile."
+    )
+    with st.form("profile_form"):
+        c1, c2 = st.columns(2)
+        with c1:
+            roles = multi("1 · My current role", "Role", prof.roles)
+            industries = multi("2 · My industry", "Industry", prof.industries)
+            topics = multi("3 · Topics I'm interested in", "Topics", prof.topics)
+            tech_stack = st.text_area(
+                "4 · Technologies, platforms and programming languages I use",
+                prof.tech_stack,
+                placeholder="e.g. Python, TypeScript, Kubernetes, Postgres, Kafka, Terraform",
+            )
+            types = multi("5 · Session types I want", "Type", prof.session_types,
+                          help="Only these types are short-listed.")  # fmt: skip
+            using = multi(
+                "6 · AWS services I use", "Services", prof.aws_using,
+                help="Short-listed at depth: level 300-400 sessions.",
+            )  # fmt: skip
+            learning = multi(
+                "7 · AWS services I want to learn", "Services", prof.aws_learning,
+                help="Short-listed as introductions: level 100-200 sessions.",
+            )  # fmt: skip
+            days = multi("8 · Days I'm attending", "Day", prof.days,
+                         help="Only these days are short-listed.")  # fmt: skip
+        with c2:
+            architecture = st.text_area(
+                "9 · Architecture areas relevant to my work",
+                prof.architecture,
+                placeholder="e.g. event-driven systems, multi-region resilience, data mesh",
+            )
+            exp_keys = [None, *EXPERIENCE]
+            experience = st.radio(
+                "10 · My level of experience",
+                exp_keys,
+                index=exp_keys.index(prof.experience) if prof.experience in exp_keys else 0,
+                format_func=lambda k: "Not saying" if k is None else EXPERIENCE[k],
+            )
+            projects = st.text_area(
+                "11 · Projects or problems I'm working on",
+                prof.projects,
+                placeholder="e.g. migrating a monolith to microservices; cutting LLM costs",
+            )
+            learn_other = st.text_area(
+                "12 · Other technologies I want to learn",
+                prof.learn_other,
+                placeholder="e.g. agent frameworks, Rust, vector databases",
+            )
+            interests = multi("13 · Strategic interests", "Interests", prof.interests)
+            irrelevant = multi(
+                "14 · Topics that are probably irrelevant to me", "Topics",
+                prof.irrelevant_topics,
+            )  # fmt: skip
+            constraints = st.text_area(
+                "15 · Preferences or constraints for the selection",
+                prof.constraints,
+                placeholder="e.g. no sessions before 10am; prefer hands-on; avoid sponsored talks",
+                help="Read by the ✨ Refine with Claude step on the Short list tab.",
+            )
+        saved = st.form_submit_button("Save profile", type="primary")
+    if saved:
+        new = Profile(
+            roles, industries, topics, tech_stack.strip(), types, using, learning, days,
+            architecture.strip(), experience, projects.strip(), learn_other.strip(),
+            interests, irrelevant, constraints.strip(),
+        )  # fmt: skip
+        save_local(new, cfg.event_id)
+        where = "on this computer"
+        with suppress(Exception):
+            if pstore := accounts.plan_store(cfg):
+                pstore.save_profile_json(new.to_json())
+                where = "on this computer and in your AWS account"
+        st.session_state["profile"] = new
+        st.session_state.pop("shortlist_refined", None)
+        st.success(f"Profile saved {where} ({new.answered()} of 15 answered). "
+                   "Open the Short list tab.")  # fmt: skip
+
+
+def shortlist_tab(signed_in: bool):
+    import re
+
+    from reinvent_agent.catalog.search import SearchFilters
+    from reinvent_agent.shortlist import refine_with_claude, score_sessions, semantic_queries
+
+    catalog = local_catalog()
+    prof = current_profile()
+    if not catalog:
+        return st.info("Download the catalog first (Catalog tab).")
+    if not prof.answered():
+        return st.info("Fill in your profile on the 👤 Profile tab first.")
+    venue_of = my_schedule().venue_of
+    favorites: set[str] = set()
+    if signed_in:
+        with suppress(Exception):
+            favorites = set(my_schedule().load().favorites)
+
+    # Free-text answers -> semantic search (cached per profile).
+    key = prof.to_json()
+    sem = st.session_state.get("shortlist_semantic")
+    if not sem or sem[0] != key:
+        ranked = {}
+        if (search := search_backend()) and (queries := semantic_queries(prof)):
+            with st.spinner("Matching your free-text answers against the catalog…"):
+                for f, text in queries.items():
+                    hits = search.search(text, SearchFilters(event_id=cfg.event_id), k=50)
+                    ranked[f] = [h.session_id for h in hits]
+        sem = (key, ranked)
+        st.session_state["shortlist_semantic"] = sem
+    picks = score_sessions(prof, catalog.values(), sem[1])
+
+    # One card per talk: repeats (-R, -R1, ...) fold into the best-scoring instance.
+    base = {}
+    for p in picks:
+        base.setdefault(re.sub(r"-R\d*$", "", p.session.code), p)
+    picks = list(base.values())
+
+    c1, c2, c3 = st.columns([2, 2, 2])
+    limit = c1.slider("How many", 6, 60, 24, step=6)
+    order = c2.radio("Sort", ["Best match", "Day & time"], horizontal=True)
+    refined = st.session_state.get("shortlist_refined")
+    if refined and refined[0] != (key, limit):
+        refined = None
+    if c3.button("✨ Refine with Claude", use_container_width=True,
+                 help="Claude re-ranks the top candidates against your whole profile, "
+                 "including preferences and constraints."):  # fmt: skip
+        from reinvent_agent.llm import make_client
+
+        try:
+            client = make_client(cfg.region, cfg.llm_provider, cfg.anthropic_key_secret_arn)
+            with st.spinner("Claude is reading your profile and the candidates…"):
+                chosen = refine_with_claude(
+                    client, cfg.model, prof, picks[: max(60, 2 * limit)], venue_of, limit
+                )
+            refined = ((key, limit), chosen)
+            st.session_state["shortlist_refined"] = refined
+        except Exception as e:
+            st.error(f"Claude refinement failed: {e}")
+    if refined:
+        by_code = {p.session.code: p for p in picks}
+        shown = []
+        for code, reason in refined[1]:
+            if p := by_code.get(code):
+                p.reasons.insert(0, f"✨ {reason}")
+                shown.append(p)
+        st.caption(f"✨ Chosen by Claude from your top {min(len(picks), max(60, 2 * limit))} "
+                   f"candidates. {len(picks)} sessions matched your profile.")  # fmt: skip
     else:
-        if not docs:
-            return st.info("No catalog yet: download it from the Catalog tab.")
-        key = ("", min_level, tuple(days), tuple(venues), tuple(types))
-        results = [r.summary() for r in browse(docs, filters)]
-        st.caption(f"{len(results)} of {len(docs)} sessions.")
+        shown = picks[:limit]
+        st.caption(f"Top {len(shown)} of {len(picks)} sessions that match your profile.")
+    if not shown:
+        return st.warning("Nothing matches yet: add topics, services or interests.")
+    if order == "Day & time":
+        from reinvent_agent.shortlist import s_key
 
+        shown = sorted(shown, key=lambda p: s_key(p.session))
+
+    cols = st.columns(3)
+    for i, p in enumerate(shown):
+        with cols[i % 3]:
+            session_card(p, venue_of, p.session.session_id in favorites, signed_in)
+
+
+def session_card(p, venue_of, is_fav: bool, signed_in: bool) -> None:
+    s = p.session
+    with st.container(border=True):
+        st.markdown(f"**{s.code}** {FAV_ICON if is_fav else ''}  \n**{s.title}**")
+        when = (
+            f"{s.day:%a %b %-d} · {s.start:%H:%M}–{s.end:%H:%M}" if s.start and s.end
+            else "No fixed time"
+        )  # fmt: skip
+        st.caption(
+            f"{s.type or 'Session'} · L{s.level_number or '—'}  \n{when}  \n📍 {venue_of(s) or '—'}"
+        )
+        b1, b2 = st.columns(2)
+        if b1.button("Details", key=f"card_{s.session_id}", use_container_width=True):
+            session_dialog(s, venue_of, is_fav, signed_in)
+        if signed_in:
+            fav_button(b2, s, is_fav, key=f"cardfav_{s.session_id}")
+
+
+def fav_button(where, s, is_fav: bool, key: str) -> None:
+    label = "☆ Unfavorite" if is_fav else f"{FAV_ICON} Favorite"
+    if where.button(label, key=key, use_container_width=True):
+        try:
+            (my_schedule().unfavorite if is_fav else my_schedule().favorite)([s.session_id])
+        except Exception as e:
+            st.error(f"Could not update favorites: {e}")
+            return
+        st.rerun()
+
+
+@st.dialog("Session details", width="large")
+def session_dialog(s, venue_of, is_fav: bool, signed_in: bool) -> None:
+    st.markdown(f"### {s.code} · {s.title}")
+    when = (
+        f"{s.day:%A, %b %-d} · {s.start:%H:%M}–{s.end:%H:%M}" if s.start and s.end
+        else "No fixed time"
+    )  # fmt: skip
+    st.markdown(
+        f"**{s.type or 'Session'}** · Level {s.level or '—'}  \n{when}  \n"
+        f"📍 {venue_of(s) or '—'}{f' · {s.room}' if s.room else ''}"
+    )
+    st.write(s.abstract or "_No abstract._")
+    details = {
+        "Speakers": ", ".join(s.speaker_names),
+        "Topics": ", ".join(s.topics),
+        "AWS services": ", ".join(s.services),
+        "Interests": ", ".join(s.areas_of_interest),
+        "Roles": ", ".join(s.roles),
+        "Industries": ", ".join(s.industries),
+        "Format": ", ".join(s.features),
+    }
+    st.markdown("\n".join(f"**{k}:** {v}  " for k, v in details.items() if v))
+    if signed_in:
+        fav_button(st, s, is_fav, key=f"dlgfav_{s.session_id}")
+
+
+def search_tab(signed_in: bool):
+    from reinvent_agent.catalog import facets as fx
+    from reinvent_agent.catalog.search import SearchFilters
+
+    catalog = local_catalog()
+    if not catalog:
+        return st.info("No catalog yet: download it from the Catalog tab.")
     sched = None
     if signed_in:
         try:
@@ -276,40 +508,235 @@ def search_tab(signed_in: bool):
             st.warning(f"Could not load your schedule: {e}")
     favorites = set(sched.favorites) if sched else set()
     reserved = set(sched.reserved) if sched else set()
+    venue_of = my_schedule().venue_of
 
-    cols = ("code", "title", "type", "level", "weekday", "day", "start", "end", "venue")
-    rows = [
-        {
-            "fav": FAV_ICON if r["sessionId"] in favorites else "",
-            "res": reservation_icon(r["sessionId"], reserved),
-            **{c: r.get(c) for c in cols},
-        }
-        for r in results
-    ]
-    # Actions sit ABOVE the table so they are visible right after ticking rows. The
-    # selection is read from widget state (set on the rerun the tick triggered); the
-    # nonce gives a fresh, unselected table after each action.
-    table_key = f"search_table_{hash(key)}_{st.session_state.get('table_nonce', 0)}"
+    left, right = st.columns([1, 3], gap="medium")
+    with left:
+        filters, group = filter_panel(catalog, venue_of, favorites, reserved, signed_in)
+    with right:
+        q = st.text_input(
+            "Search sessions",
+            placeholder="serverless event-driven architecture (leave empty to browse all)",
+        )
+        if q:
+            search = search_backend()
+            if search is None:
+                return not_deployed()
+            # Selecting rows reruns the script; keep results so we don't re-embed.
+            cached = st.session_state.get("search_results")
+            if not cached or cached[0] != q:
+                hits = search.search(q, SearchFilters(event_id=cfg.event_id), k=100)
+                cached = (q, [h.session_id for h in hits])
+                st.session_state["search_results"] = cached
+            ranked = [catalog[i] for i in cached[1] if i in catalog]
+            sessions = fx.apply(ranked, filters, venue_of)
+            st.caption(
+                f"{len(sessions)} of the 100 best matches for “{q}”"
+                + (f" pass {filters.active} filter(s)." if filters.active else ".")
+            )
+        else:
+            ordered = sorted(
+                catalog.values(), key=lambda s: (s.start is None, s.start or 0, s.code)
+            )
+            sessions = fx.apply(ordered, filters, venue_of)
+            st.caption(f"{len(sessions)} of {len(catalog)} sessions.")
+        if group:
+            by = fx.GROUPS[group]
+            sessions = sorted(sessions, key=lambda s: by(s, venue_of))  # stable: keeps order
+            counts = Counter(by(s, venue_of) for s in sessions)
+            st.caption(
+                f"Grouped by {group.lower()}: "
+                + " · ".join(f"{g} ({n})" for g, n in sorted(counts.items()))
+            )
+        key = (q, filters.key(), group)
+        results = [session_row(s, venue_of) for s in sessions]
+        cols = ("code", "title", "type", "level", "weekday", "day", "start", "end", "venue")
+        rows = [
+            {
+                **({group.lower(): fx.GROUPS[group](s, venue_of)} if group else {}),
+                "fav": FAV_ICON if r["sessionId"] in favorites else "",
+                "res": reservation_icon(r["sessionId"], reserved),
+                **{c: r.get(c) for c in cols},
+            }
+            for s, r in zip(sessions, results, strict=True)
+        ]
+        results_table(rows, results, key, favorites, reserved, signed_in)
+
+
+def session_row(s: Session, venue_of) -> dict:
+    return {
+        "sessionId": s.session_id,
+        "code": s.code,
+        "title": s.title,
+        "type": s.type,
+        "level": s.level_number,
+        "weekday": s.day.strftime("%A") if s.day else None,
+        "day": s.day.isoformat() if s.day else None,
+        "start": s.start.strftime("%H:%M") if s.start else None,
+        "end": s.end.strftime("%H:%M") if s.end else None,
+        "venue": venue_of(s),
+    }
+
+
+FACET_ORDER = ["Level", "Type", "Track", "Day", "Time", "Venue", "Speakers", "Topics",
+               "Services", "Interests", "Role", "Industry", "Features"]  # fmt: skip
+
+
+def filter_panel(catalog, venue_of, favorites, reserved, signed_in):
+    """Left-hand filter panel (any-of within a facet, all-of across facets)."""
+    from datetime import time as dtime
+
+    from reinvent_agent.catalog import facets as fx
+
+    sessions = list(catalog.values())
+    state = st.session_state
+    full_day = (dtime(7, 0), dtime(20, 0))
+
+    def is_set(k: str) -> bool:
+        value = state.get(f"fx_{k}")
+        return tuple(value) != full_day if k == "Time" and value else bool(value)
+
+    active = sum(is_set(k) for k in ["code", "title", "abstract", *FACET_ORDER])
+    active += state.get("fx_mine", "all") != "all"
+    head, clear = st.columns([3, 2])
+    head.markdown("#### 🔽 Filter" + (f" · {active}" if active else ""))
+    if clear.button("Clear", disabled=not active, use_container_width=True):
+        for k in [k for k in state if str(k).startswith("fx_")]:
+            del state[k]
+        st.rerun()
+
+    code = st.text_input("Id", key="fx_code", placeholder="Id…", label_visibility="collapsed")
+    title = st.text_input(
+        "Title", key="fx_title", placeholder="Title…", label_visibility="collapsed"
+    )
+    abstract = st.text_input(
+        "Abstract", key="fx_abstract", placeholder="Abstract…", label_visibility="collapsed"
+    )
+    group = st.selectbox(
+        "Group",
+        [None, *fx.GROUPS],
+        key="fx_group",
+        format_func=lambda g: "Group by…" if g is None else f"Group: {g}",
+        label_visibility="collapsed",
+    )
+
+    from reinvent_agent.catalog.concurrency import track_labels
+
+    labels = track_labels(sessions)
+    selected: dict[str, list] = {}
+    start_from = start_to = None
+    for name in FACET_ORDER:
+        with st.expander(name, expanded=is_set(name)):
+            if name == "Time":
+                lo, hi = st.slider(
+                    "Starts between",
+                    value=full_day,
+                    step=timedelta(minutes=15),
+                    format="HH:mm",
+                    key="fx_Time",
+                )
+                if (lo, hi) != full_day:
+                    start_from, start_to = lo, hi
+                continue
+            counts = fx.options(sessions, name, venue_of)
+            if name in ("Level", "Day"):
+                values = sorted(counts)
+            else:
+                values = sorted(counts, key=lambda v: (-counts[v], str(v)))
+
+            def fmt(v, name=name, counts=counts):
+                text = (
+                    date.fromisoformat(v).strftime("%a %b %-d") if name == "Day"
+                    else labels.get(v, v) if name == "Track" else str(v)
+                )  # fmt: skip
+                return f"{text} ({counts[v]})"
+
+            selected[name] = st.multiselect(
+                name,
+                values,
+                key=f"fx_{name}",
+                format_func=fmt,
+                placeholder="Any",
+                label_visibility="collapsed",
+            )
+
+    only_ids = None
     if signed_in:
-        state = st.session_state.get(table_key)
-        selected = list(state.selection.rows) if state is not None else []
-        session_actions([results[i] for i in selected], favorites, reserved)
-    st.dataframe(
-        rows,
+        mine = state.get("fx_mine", "all")
+        with st.expander(f"{FAV_ICON} Favorites", expanded=mine != "all"):
+            choice = st.radio(
+                "Show",
+                ["all", "fav", "res"],
+                key="fx_mine",
+                format_func={
+                    "all": "All sessions",
+                    "fav": f"{FAV_ICON} My favorites ({len(favorites)})",
+                    "res": f"{RES_ICON} My reservations ({len(reserved)})",
+                }.get,
+                label_visibility="collapsed",
+            )
+            only_ids = {"fav": favorites, "res": reserved}.get(choice)
+    return (
+        fx.Filters(code, title, abstract, selected, start_from, start_to, only_ids),
+        group,
+    )
+
+
+def results_table(rows, results, key, favorites, reserved, signed_in) -> None:
+    if not signed_in:
+        st.dataframe(
+            rows,
+            hide_index=True,
+            use_container_width=True,
+            column_config=icon_columns(),
+        )
+        return st.caption("Sign in to favorite or reserve sessions from here.")
+
+    # Actions sit ABOVE the table so they are visible right after ticking rows. The
+    # ✓ column lives in an editable table, so "select all" can tick every box: it sets
+    # the column's default and swaps in a fresh table (nonce), which also clears ticks
+    # after each action.
+    base = f"search_table_{hash(key)}"
+    all_flag = st.session_state.get(f"{base}_selectall", False)
+    table_key = f"{base}_{st.session_state.get('table_nonce', 0)}"
+    selected = {i for i in range(len(rows)) if all_flag}
+    for i, change in (st.session_state.get(table_key) or {}).get("edited_rows", {}).items():
+        if "✓" in change:
+            (selected.add if change["✓"] else selected.discard)(int(i))
+
+    a1, a2, _ = st.columns([1, 1, 1])
+    if a1.button(f"☑️ Select all ({len(rows)})", disabled=not rows, use_container_width=True):
+        reset_table(base, select_all=True)
+    if a2.button("☐ Unselect all", disabled=not selected, use_container_width=True):
+        reset_table(base, select_all=False)
+    session_actions([results[i] for i in sorted(selected)], favorites, reserved)
+    st.data_editor(
+        [{"✓": all_flag, **r} for r in rows],
         hide_index=True,
         use_container_width=True,
-        column_config={
-            "fav": st.column_config.TextColumn(FAV_ICON, width=40, help="Favorited"),
-            "res": st.column_config.TextColumn(
-                RES_ICON, width=40, help=f"{RES_ICON} reserved · {NO_RES_ICON} no reserved seating"
-            ),
-        },
-        on_select="rerun" if signed_in else "ignore",
-        selection_mode="multi-row",
+        disabled=[c for c in rows[0] if c != "✓"] if rows else True,
+        column_config={"✓": st.column_config.CheckboxColumn("✓", width=40), **icon_columns()},
         key=table_key,
     )
-    if not signed_in:
-        st.caption("Sign in to favorite or reserve sessions from here.")
+
+
+def icon_columns() -> dict:
+    return {
+        "fav": st.column_config.TextColumn(FAV_ICON, width=40, help="Favorited"),
+        "res": st.column_config.TextColumn(
+            RES_ICON, width=40, help=f"{RES_ICON} reserved · {NO_RES_ICON} no reserved seating"
+        ),
+    }
+
+
+def reset_table(base: str | None = None, select_all: bool = False) -> None:
+    """Fresh search table: every row ticked (select all) or none."""
+    for k in [k for k in st.session_state if str(k).endswith("_selectall")]:
+        del st.session_state[k]
+    if base and select_all:
+        st.session_state[f"{base}_selectall"] = True
+    st.session_state["table_nonce"] = st.session_state.get("table_nonce", 0) + 1
+    st.rerun()
 
 
 def session_actions(picked: list[dict], favorites: set[str], reserved: set[str]) -> None:
@@ -403,8 +830,7 @@ def run_action(name: str, fn, targets: list[str], picked: list[dict]) -> None:
             why = "; ".join(f"{code.get(i, i)} ({r})" for i, r in result.failed.items())
             msgs.append(("warning", f"Not done: {why}"))
     st.session_state["action_result"] = msgs
-    st.session_state["table_nonce"] = st.session_state.get("table_nonce", 0) + 1
-    st.rerun()
+    reset_table()
 
 
 def index_catalog(sessions: list[Session], bar) -> None:
@@ -1088,9 +1514,13 @@ def venue_plan(sched_: MySchedule, sched) -> None:
 signed_in = sidebar()
 model_caption()
 st.title("re:Invent 2026 planner")
-tab_ask, tab_search, tab_sched, tab_plans, tab_venues, tab_cat = st.tabs(
-    ["Ask", "Search", "My schedule", "Plans", "Venues", "Catalog"]
+tab_prof, tab_short, tab_ask, tab_search, tab_sched, tab_plans, tab_venues, tab_cat = st.tabs(
+    ["👤 Profile", "⭐ Short list", "Ask", "Search", "My schedule", "Plans", "Venues", "Catalog"]
 )
+with tab_prof:
+    profile_tab(signed_in)
+with tab_short:
+    shortlist_tab(signed_in)
 with tab_ask:
     ask_tab()
 with tab_search:
