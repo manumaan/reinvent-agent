@@ -256,7 +256,8 @@ def profile_tab(signed_in: bool):
 
     def choices(name: str) -> tuple[list, Callable]:
         counts = fx.options(sessions, name, venue_of)
-        values = sorted(counts) if name == "Day" else sorted(counts, key=lambda v: (-counts[v], v))
+        # Alphabetical (case-insensitive); days in calendar order.
+        values = sorted(counts) if name == "Day" else sorted(counts, key=lambda v: str(v).lower())
         if name == "Day":
             return values, lambda v: f"{date.fromisoformat(v):%a %b %-d} ({counts[v]})"
         return values, lambda v: f"{v} ({counts[v]})"
