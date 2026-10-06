@@ -89,7 +89,19 @@ def test_schedule_tools_plan_from_favorites(tmp_path):
     )
     seen = {}
     tools = {t.name: t for t in CatalogQA(_search(), None, "m", schedule=ms)._tools(seen)}
-    assert set(tools) == {"catalog_search", "get_my_schedule", "plan_one_venue_per_day"}
+    assert set(tools) == {
+        "catalog_search",
+        "get_my_schedule",
+        "plan_one_venue_per_day",
+        "venue_concurrency",
+    }
+    parallel = json.loads(tools["venue_concurrency"].call({"day": "2026-12-01", "at": "09:30"}))
+    assert parallel["Venetian"]["codes"] == ["SVS401"]
+    assert parallel["Wynn"]["codes"] == ["SVS201"]
+    venetian = json.loads(
+        tools["venue_concurrency"].call({"day": "2026-12-01", "venue": "Venetian"})
+    )
+    assert venetian["venue_days"][0]["peak_sessions"] == 1 and venetian["slots"]
     mine = json.loads(tools["get_my_schedule"].call({}))
     assert [f["code"] for f in mine["favorites"]] == ["SVS401", "SVS310", "ANT305", "SVS320"]
     plan = json.loads(tools["plan_one_venue_per_day"].call({}))

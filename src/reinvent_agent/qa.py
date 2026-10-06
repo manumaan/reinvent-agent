@@ -31,9 +31,12 @@ The attendee's own favorites, reservations and personal time come from get_my_sc
 (live from the AWS Events API). For any plan or itinerary built from their sessions, \
 call plan_one_venue_per_day (or get_my_schedule for other layouts) rather than working \
 out overlaps yourself, and present its result day by day: the venue, the sessions in \
-time order, the free slots, and what could not fit and why. Use the weekday and times \
-exactly as the tools give them. If a tool says the attendee is not signed in, tell them \
-to sign in with AWS Builder ID in the app sidebar (or `reinvent-agent auth login`)."""
+time order, the free slots, and what could not fit and why. For questions about what \
+runs in parallel at a venue (how many sessions or tracks at once, the busiest times), \
+call venue_concurrency; a "track" is the session-code prefix such as AIM or SEC. Use \
+the weekday and times exactly as the tools give them. If a tool says the attendee is \
+not signed in, tell them to sign in with AWS Builder ID in the app sidebar (or \
+`reinvent-agent auth login`)."""
 
 
 @dataclass
@@ -180,7 +183,67 @@ class CatalogQA:
                 cite([schedule.describe(x.session_id) for x in d.sessions])
             return json.dumps(result.to_dict())
 
-        return [catalog_search, get_my_schedule, plan_one_venue_per_day]
+        @beta_tool
+        def venue_concurrency(
+            day: str | None = None, venue: str | None = None, at: str | None = None
+        ) -> str:
+            """How many sessions and tracks run at the same time, per venue.
+
+            A track is the session-code prefix (AIM, SEC, DAT, ...); the catalog's own
+            tracks field is empty. Without ``at``: per day and venue, the session/room/
+            track counts and the busiest moment (peak parallel sessions and tracks); with
+            ``day`` and ``venue`` also each 30-minute slot. With ``at``: what is running at
+            that moment, per venue, grouped by track.
+
+            Args:
+                day: YYYY-MM-DD (event runs 2026-11-30..12-04); omit for all days.
+                venue: e.g. "MGM Grand", "Wynn", "Caesars Forum"; omit for all venues.
+                at: HH:MM local time, e.g. "10:30" (needs ``day``).
+            """
+            from collections import Counter
+
+            from reinvent_agent.catalog import concurrency as cc
+
+            sessions = list(schedule.catalog.values())
+            labels = cc.track_labels(sessions)
+            if at:
+                if not day:
+                    return "Give a day (YYYY-MM-DD) with a time."
+                by_venue: dict[str, list] = {}
+                for sess, v in cc.running_at(sessions, schedule.venue_of, day, at, venue):
+                    by_venue.setdefault(v, []).append(sess)
+                return json.dumps(
+                    {
+                        v: {
+                            "sessions": len(ss),
+                            "tracks": {
+                                labels.get(t, t): n
+                                for t, n in Counter(cc.track_of(x) for x in ss).most_common()
+                            },
+                            "codes": [x.code for x in ss],
+                        }
+                        for v, ss in sorted(by_venue.items())
+                    }
+                )
+            rows = [
+                r.__dict__
+                for r in cc.overview(sessions, schedule.venue_of)
+                if (not day or r.day == day) and (not venue or r.venue == venue)
+            ]
+            out: dict = {"venue_days": rows}
+            if day and venue:
+                out["slots"] = [
+                    {
+                        "start": sl.start,
+                        "end": sl.end,
+                        "sessions": len(sl.sessions),
+                        "tracks": {labels.get(t, t): n for t, n in sl.tracks.most_common()},
+                    }
+                    for sl in cc.venue_day_slots(sessions, schedule.venue_of, day, venue)
+                ]
+            return json.dumps(out)
+
+        return [catalog_search, get_my_schedule, plan_one_venue_per_day, venue_concurrency]
 
     def ask(self, question: str, history: list[dict] | None = None) -> Answer:
         seen: dict[str, dict] = {}

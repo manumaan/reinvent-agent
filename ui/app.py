@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import suppress
+from datetime import date
 
 import streamlit as st
 
@@ -545,6 +547,191 @@ def schedule_tab(signed_in: bool):
         )
 
 
+BAR_BLUE = "#2a78d6"  # sequential blue, step 450
+HEAT_RANGE = ["#cde2fb", "#104281"]  # sequential blue, steps 100 -> 650
+
+
+def venues_tab(signed_in: bool):
+    """What runs in parallel at each venue: sessions, tracks, and overlaps."""
+    import altair as alt
+    import pandas as pd
+
+    from reinvent_agent.catalog import concurrency as cc
+
+    catalog = local_catalog()
+    if not catalog:
+        return st.info("No catalog yet: download it from the Catalog tab.")
+    sched_ = my_schedule()
+    favorites: set[str] = set()
+    if signed_in:
+        with suppress(Exception):  # schedule unavailable: show the catalog without stars
+            favorites = set(sched_.load().favorites)
+    st.caption(
+        "A **track** is the session-code prefix (AIM, SEC, DAT, …): the catalog's own "
+        "tracks field is empty. Labels show each track's most distinctive topic."
+    )
+    only_favs = signed_in and st.toggle(
+        f"Only my {FAV_ICON} favorites", help="Count only sessions you favorited"
+    )
+    sessions = [s for s in catalog.values() if not only_favs or s.session_id in favorites]
+    labels = cc.track_labels(catalog.values())
+    venue_of = sched_.venue_of
+
+    rows = cc.overview(sessions, venue_of)
+    st.subheader("Busiest moment per venue and day")
+    st.dataframe(
+        [
+            {
+                "day": date.fromisoformat(r.day).strftime("%a %b %-d"),
+                "venue": r.venue,
+                "sessions": r.sessions,
+                "rooms": r.rooms,
+                "tracks that day": r.tracks,
+                "peak: sessions at once": r.peak_sessions,
+                "peak: tracks at once": r.peak_tracks,
+                "peak at": r.peak_at,
+            }
+            for r in rows
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    st.subheader("Through the day")
+    days = sorted({r.day for r in rows})
+    c1, c2 = st.columns(2)
+    day = c1.selectbox(
+        "Day", days, format_func=lambda d: date.fromisoformat(d).strftime("%A, %b %-d")
+    )
+    venues = sorted({r.venue for r in rows if r.day == day})
+    venue = c2.selectbox("Venue", venues)
+    slots = cc.venue_day_slots(sessions, venue_of, day, venue)
+    if not slots:
+        return st.info("Nothing scheduled there that day.")
+
+    def breakdown(counter) -> str:
+        return ", ".join(f"{t}×{n}" for t, n in counter.most_common())
+
+    bars = pd.DataFrame(
+        [
+            {
+                "slot": sl.start,
+                "sessions": len(sl.sessions),
+                "tracks": len(sl.tracks),
+                "by track": breakdown(sl.tracks),
+            }
+            for sl in slots
+        ]
+    )
+    st.altair_chart(
+        alt.Chart(bars, title="Sessions running in each 30-minute slot")
+        .mark_bar(color=BAR_BLUE, cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+        .encode(
+            x=alt.X("slot:O", title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("sessions:Q", title="sessions at once"),
+            tooltip=[
+                alt.Tooltip("slot", title="from"),
+                alt.Tooltip("sessions", title="sessions"),
+                alt.Tooltip("tracks", title="tracks"),
+                alt.Tooltip("by track", title="by track"),
+            ],
+        )
+        .properties(height=220),
+        use_container_width=True,
+    )
+
+    cells = pd.DataFrame(
+        [
+            {
+                "track": labels.get(t, t),
+                "slot": sl.start,
+                "sessions": n,
+                "codes": ", ".join(x.code for x in sl.sessions if cc.track_of(x) == t),
+            }
+            for sl in slots
+            for t, n in sl.tracks.items()
+        ]
+    )
+    order = cells.groupby("track")["sessions"].sum().sort_values(ascending=False).index.tolist()
+    st.altair_chart(
+        alt.Chart(cells, title="Which tracks run at the same time")
+        .mark_rect(cornerRadius=2, stroke="white", strokeWidth=1)
+        .encode(
+            x=alt.X("slot:O", title=None, axis=alt.Axis(labelAngle=0)),
+            y=alt.Y(
+                "track:N",
+                sort=order,
+                title=None,
+                axis=alt.Axis(labelLimit=260, labelOverlap=False),
+            ),
+            color=alt.Color(
+                "sessions:Q",
+                scale=alt.Scale(range=HEAT_RANGE),
+                legend=alt.Legend(title="sessions"),
+            ),
+            tooltip=["track", alt.Tooltip("slot", title="from"), "sessions", "codes"],
+        )
+        .properties(height=max(160, 28 * len(order))),
+        use_container_width=True,
+    )
+
+    with st.expander("Slot table"):
+        st.dataframe(
+            [
+                {
+                    "from": sl.start,
+                    "to": sl.end,
+                    "sessions": len(sl.sessions),
+                    "tracks": len(sl.tracks),
+                    "by track": breakdown(sl.tracks),
+                    f"my {FAV_ICON}": ", ".join(
+                        x.code for x in sl.sessions if x.session_id in favorites
+                    ),
+                }
+                for sl in slots
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.subheader("What overlaps a session")
+    by_code = {s.code: s for s in sorted(catalog.values(), key=lambda s: s.code) if s.start}
+    code = st.selectbox(
+        "Session",
+        list(by_code),
+        index=None,
+        placeholder="Type a code or pick one, e.g. SEC341",
+        format_func=lambda c: f"{c} — {by_code[c].title[:70]}",
+    )
+    if code:
+        target = by_code[code]
+        others = cc.overlapping(target, catalog.values(), venue_of)
+        tv = venue_of(target)
+        same = sum(1 for _s, v in others if v == tv)
+        st.markdown(
+            f"**{target.code}** · {target.start:%a %b %-d %H:%M}–{target.end:%H:%M} · {tv}: "
+            f"**{len(others)}** sessions overlap it, **{same}** at the same venue."
+        )
+        st.dataframe(
+            [
+                {
+                    "": FAV_ICON if s.session_id in favorites else "",
+                    "start": f"{s.start:%H:%M}",
+                    "end": f"{s.end:%H:%M}",
+                    "code": s.code,
+                    "track": labels.get(cc.track_of(s), cc.track_of(s)),
+                    "title": s.title,
+                    "venue": v,
+                    "room": s.room,
+                }
+                for s, v in others
+            ],
+            hide_index=True,
+            use_container_width=True,
+            column_config={"": st.column_config.TextColumn(width=40)},
+        )
+
+
 def plans_tab(signed_in: bool):
     if not signed_in:
         return st.info("Sign in to plan from your favorites and reservations.")
@@ -901,8 +1088,8 @@ def venue_plan(sched_: MySchedule, sched) -> None:
 signed_in = sidebar()
 model_caption()
 st.title("re:Invent 2026 planner")
-tab_ask, tab_search, tab_sched, tab_plans, tab_cat = st.tabs(
-    ["Ask", "Search", "My schedule", "Plans", "Catalog"]
+tab_ask, tab_search, tab_sched, tab_plans, tab_venues, tab_cat = st.tabs(
+    ["Ask", "Search", "My schedule", "Plans", "Venues", "Catalog"]
 )
 with tab_ask:
     ask_tab()
@@ -912,5 +1099,7 @@ with tab_sched:
     schedule_tab(signed_in)
 with tab_plans:
     plans_tab(signed_in)
+with tab_venues:
+    venues_tab(signed_in)
 with tab_cat:
     catalog_tab(signed_in)
