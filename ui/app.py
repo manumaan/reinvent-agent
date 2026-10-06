@@ -602,7 +602,7 @@ def filter_panel(catalog, venue_of, favorites, reserved, signed_in):
         return tuple(value) != full_day if k == "Time" and value else bool(value)
 
     active = sum(is_set(k) for k in ["code", "title", "abstract", *FACET_ORDER])
-    active += state.get("fx_mine", "all") != "all"
+    active += any(state.get(f"fx_{k}") for k in ("fav", "short", "res"))
     head, clear = st.columns([3, 2])
     head.markdown("#### 🔽 Filter" + (f" · {active}" if active else ""))
     if clear.button("Clear", disabled=not active, use_container_width=True):
@@ -667,31 +667,25 @@ def filter_panel(catalog, venue_of, favorites, reserved, signed_in):
 
     only_ids = None
     if signed_in:
-        mine = state.get("fx_mine", "all")
-        with st.expander(f"{FAV_ICON} Favorites & short list", expanded=mine != "all"):
-            # Labels must not change between reruns (no live counts in them): Streamlit
-            # treats a radio with different labels as a new widget and resets it to
-            # "All sessions", e.g. right after an unfavorite.
-            shortlist = st.session_state.get("shortlist_ids", set())
-            choice = st.radio(
-                "Show",
-                ["all", "fav", "short", "res"],
-                key="fx_mine",
-                format_func={
-                    "all": "All sessions",
-                    "fav": f"{FAV_ICON} My favorites",
-                    "short": "📋 Short list",
-                    "res": f"{RES_ICON} My reservations",
-                }.get,
-                label_visibility="collapsed",
-            )
+        shortlist = st.session_state.get("shortlist_ids", set())
+        sets = {"fav": favorites, "short": shortlist, "res": reserved}
+        # Labels stay fixed (counts go in the caption) so ticks survive reruns.
+        labels = {
+            "fav": f"{FAV_ICON} My favorites",
+            "short": "📋 Short list",
+            "res": f"{RES_ICON} My reservations",
+        }
+        any_on = any(state.get(f"fx_{k}") for k in sets)
+        with st.expander(f"{FAV_ICON} Favorites & short list", expanded=any_on):
+            ticked = [k for k in sets if st.checkbox(labels[k], key=f"fx_{k}")]
             st.caption(
                 f"{len(favorites)} favorites · {len(shortlist)} short-listed · "
-                f"{len(reserved)} reservations"
+                f"{len(reserved)} reservations. Tick several to see sessions in any of them."
             )
-            if choice == "short" and not shortlist:
+            if "short" in ticked and not shortlist:
                 st.caption("Your short list is empty: fill in the 👤 Profile tab.")
-            only_ids = {"fav": favorites, "short": shortlist, "res": reserved}.get(choice)
+        if ticked:  # any-of, like every other filter section
+            only_ids = set().union(*(sets[k] for k in ticked))
     return (
         fx.Filters(code, title, abstract, selected, start_from, start_to, only_ids),
         group,
@@ -726,14 +720,25 @@ def results_table(rows, results, key, favorites, reserved, signed_in) -> None:
     if a2.button("☐ Unselect all", disabled=not selected, use_container_width=True):
         reset_table(base, select_all=False)
     session_actions([results[i] for i in sorted(selected)], favorites, reserved)
+    import pandas as pd
+
+    frame = pd.DataFrame([{"✓": all_flag, **r} for r in rows])
+    # Highlight ticked rows (the editor has no built-in row highlight). Only the
+    # styling changes between reruns, not the data, so the ticks are kept.
+    styled = frame.style.apply(
+        lambda row: [SELECTED_ROW if row.name in selected else ""] * len(row), axis=1
+    )
     st.data_editor(
-        [{"✓": all_flag, **r} for r in rows],
+        styled,
         hide_index=True,
         use_container_width=True,
         disabled=[c for c in rows[0] if c != "✓"] if rows else True,
         column_config={"✓": st.column_config.CheckboxColumn("✓", width=40), **icon_columns()},
         key=table_key,
     )
+
+
+SELECTED_ROW = "background-color: rgba(42, 120, 214, 0.18)"  # blue step 450, tinted
 
 
 def icon_columns() -> dict:
