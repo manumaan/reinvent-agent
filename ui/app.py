@@ -361,6 +361,9 @@ def shortlist_tab(signed_in: bool):
     from reinvent_agent.catalog.search import SearchFilters
     from reinvent_agent.shortlist import refine_with_claude, score_sessions, semantic_queries
 
+    # The Search tab's "Short list" filter reads the sessions shown here. Tabs render
+    # in order every run and this tab comes first, so this is always current.
+    st.session_state["shortlist_ids"] = set()
     catalog = local_catalog()
     prof = current_profile()
     if not catalog:
@@ -428,6 +431,7 @@ def shortlist_tab(signed_in: bool):
         st.caption(f"Top {len(shown)} of {len(picks)} sessions that match your profile.")
     if not shown:
         return st.warning("Nothing matches yet: add topics, services or interests.")
+    st.session_state["shortlist_ids"] = {p.session.session_id for p in shown}
     if order == "Day & time":
         from reinvent_agent.shortlist import s_key
 
@@ -664,19 +668,30 @@ def filter_panel(catalog, venue_of, favorites, reserved, signed_in):
     only_ids = None
     if signed_in:
         mine = state.get("fx_mine", "all")
-        with st.expander(f"{FAV_ICON} Favorites", expanded=mine != "all"):
+        with st.expander(f"{FAV_ICON} Favorites & short list", expanded=mine != "all"):
+            # Labels must not change between reruns (no live counts in them): Streamlit
+            # treats a radio with different labels as a new widget and resets it to
+            # "All sessions", e.g. right after an unfavorite.
+            shortlist = st.session_state.get("shortlist_ids", set())
             choice = st.radio(
                 "Show",
-                ["all", "fav", "res"],
+                ["all", "fav", "short", "res"],
                 key="fx_mine",
                 format_func={
                     "all": "All sessions",
-                    "fav": f"{FAV_ICON} My favorites ({len(favorites)})",
-                    "res": f"{RES_ICON} My reservations ({len(reserved)})",
+                    "fav": f"{FAV_ICON} My favorites",
+                    "short": "📋 Short list",
+                    "res": f"{RES_ICON} My reservations",
                 }.get,
                 label_visibility="collapsed",
             )
-            only_ids = {"fav": favorites, "res": reserved}.get(choice)
+            st.caption(
+                f"{len(favorites)} favorites · {len(shortlist)} short-listed · "
+                f"{len(reserved)} reservations"
+            )
+            if choice == "short" and not shortlist:
+                st.caption("Your short list is empty: fill in the 👤 Profile tab.")
+            only_ids = {"fav": favorites, "short": shortlist, "res": reserved}.get(choice)
     return (
         fx.Filters(code, title, abstract, selected, start_from, start_to, only_ids),
         group,
