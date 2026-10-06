@@ -51,6 +51,31 @@ def room_tokens(room: str) -> list[str]:
     return tokens
 
 
+_NOT_A_PLACE = re.compile(r"^(level|floor)\s*-?\d+$|^(content hub|expo)$", re.I)
+
+
+def sub_venue(room: str | None) -> str | None:
+    """The most specific space in a room path: its last meaningful part.
+
+    ``"Caesars Palace | Promenade South | Octavius 4 | Content Hub | Red Theater"``
+    -> ``"Red Theater"``; ``"MGM Grand | Level 1 | Boulevard 157"`` -> ``"Boulevard 157"``;
+    ``"Level 5, Palazzo Ballroom B"`` -> ``"Palazzo Ballroom B"``.
+    """
+    if not room:
+        return None
+    parts = [p.strip() for p in re.split(r"[|,]", room) if p.strip()]
+    places = [p for p in parts if not _NOT_A_PLACE.match(p)]
+    return places[-1] if places else None
+
+
+def place(venue: str | None, room: str | None) -> str | None:
+    """``"Caesars Palace (Red Theater)"``, or just the venue when there's no room."""
+    sub = sub_venue(room)
+    if venue and sub and sub.lower() != venue.lower():
+        return f"{venue} ({sub})"
+    return venue or sub
+
+
 def venue_named_in(room: str) -> str | None:
     low = room.lower()
     for alias, venue in sorted(VENUE_ALIASES.items(), key=lambda kv: -len(kv[0])):

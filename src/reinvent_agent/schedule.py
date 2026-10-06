@@ -15,9 +15,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from reinvent_agent.catalog.venues import sub_venue
 from reinvent_agent.events_api.models import BulkResult, Schedule, Session
 
-MAX_AGE_SECONDS = 15 * 60
+# Short, so favorites changed in the AWS portal show up here within a minute. Each
+# refresh is one GetSchedule call (quota: 60 per minute per attendee).
+MAX_AGE_SECONDS = 60
 EVENT_TZ = "America/Los_Angeles"  # re:Invent, Las Vegas
 
 FAILURE_TEXT = {
@@ -139,21 +142,48 @@ class MySchedule:
             out.failed[f.session_id] = reason
         return out
 
+    def _verified(self, result: WriteResult, field: str, present: bool) -> WriteResult:
+        """Re-read GetSchedule and keep in ``done`` only what AWS now really shows.
+
+        A write can report success (or a 404 "already gone") while AWS still lists the
+        session - e.g. a stale ID or a change made elsewhere - so never trust the write
+        response alone.
+        """
+        listed = set(getattr(self.refresh(), field))
+        for sid in list(result.done):
+            if (sid in listed) != present:
+                result.done.remove(sid)
+                result.failed[sid] = (
+                    "AWS still lists it - try again or check the portal"
+                    if not present
+                    else "AWS doesn't list it - try again"
+                )
+        return result
+
+    def _each(self, action: str, ids: list[str], call) -> WriteResult:
+        """Single-session removals: one failure doesn't stop the rest."""
+        out = WriteResult(action)
+        for sid in ids:
+            try:
+                call(self.event_id, sid)  # False on 404: verified against GetSchedule below
+                out.done.append(sid)
+            except Exception as e:
+                out.failed[sid] = str(e)
+        return out
+
     def favorite(self, ids: list[str]) -> WriteResult:
         client = self._client_or_raise()
         try:
-            return self._bulk("favorite", client.associate_favorites(self.event_id, ids))
-        finally:
+            result = self._bulk("favorite", client.associate_favorites(self.event_id, ids))
+        except Exception:
             self.refresh()
+            raise
+        return self._verified(result, "favorites", present=True)
 
     def unfavorite(self, ids: list[str]) -> WriteResult:
         client = self._client_or_raise()
-        try:
-            for sid in ids:
-                client.disassociate_favorite(self.event_id, sid)  # 404 = already gone
-            return WriteResult("unfavorite", done=list(ids))
-        finally:
-            self.refresh()
+        result = self._each("unfavorite", ids, client.disassociate_favorite)
+        return self._verified(result, "favorites", present=False)
 
     def reserve(self, ids: list[str], tz: str | None = None) -> WriteResult:
         """``tz``: the viewer's timezone, for the release times in the not-open note."""
@@ -162,8 +192,9 @@ class MySchedule:
 
         client = self._client_or_raise()
         try:
-            return self._bulk("reserve", client.reserve_sessions(self.event_id, ids))
+            result = self._bulk("reserve", client.reserve_sessions(self.event_id, ids))
         except OperationClosedError:
+            self.refresh()
             return WriteResult(
                 "reserve",
                 failed={sid: "reservations not open" for sid in ids},
@@ -171,17 +202,15 @@ class MySchedule:
                 + (release_note(tz) or "Try again shortly.")
                 + " Favorite the sessions for now.",
             )
-        finally:
+        except Exception:
             self.refresh()
+            raise
+        return self._verified(result, "reserved", present=True)
 
     def cancel_reservation(self, ids: list[str]) -> WriteResult:
         client = self._client_or_raise()
-        try:
-            for sid in ids:
-                client.cancel_reservation(self.event_id, sid)  # 404 = already gone
-            return WriteResult("cancel reservation", done=list(ids))
-        finally:
-            self.refresh()
+        result = self._each("cancel reservation", ids, client.cancel_reservation)
+        return self._verified(result, "reserved", present=False)
 
     # --- details -------------------------------------------------------------
 
@@ -213,6 +242,7 @@ class MySchedule:
             "start": s.start.strftime("%H:%M") if s.start else None,
             "end": s.end.strftime("%H:%M") if s.end else None,
             "venue": self.venue_of(s),
+            "sub_venue": sub_venue(s.room),
             "room": s.room,
         }
 
@@ -244,6 +274,7 @@ class MySchedule:
                 "start": start.strftime("%H:%M"),
                 "end": end.strftime("%H:%M"),
                 "venue": p.location,
+                "sub_venue": None,
                 "favorite": False,
                 "reserved": False,
                 "kind": "personal time",

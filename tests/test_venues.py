@@ -48,3 +48,16 @@ def test_level_number_handles_en_dash():
     assert Session(sessionId="a", title="t", level="300 – Advanced").level_number == 300
     assert Session(sessionId="a", title="t", level="500 - Distinguished").level_number == 500
     assert Session(sessionId="a", title="t").level_number is None
+
+
+def test_sub_venue_is_the_most_specific_space():
+    from reinvent_agent.catalog.venues import place, sub_venue
+
+    room = "Caesars Palace | Promenade South | Octavius 4 | Content Hub | Red Theater"
+    assert sub_venue(room) == "Red Theater"
+    assert sub_venue("MGM Grand | Level 1 | Boulevard 157") == "Boulevard 157"
+    assert sub_venue("Level 5, Palazzo Ballroom B") == "Palazzo Ballroom B"
+    assert sub_venue("Venetian | Level 2 | Hall B | Expo | Industry Theater") == "Industry Theater"
+    assert sub_venue("Level 3 | Content Hub") is None and sub_venue(None) is None
+    assert place("Caesars Palace", room) == "Caesars Palace (Red Theater)"
+    assert place("Wynn", None) == "Wynn" and place(None, room) == "Red Theater"

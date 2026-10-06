@@ -23,6 +23,7 @@ import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from reinvent_agent.catalog.venues import place
 from reinvent_agent.events_api.models import Session
 from reinvent_agent.profile import EXPERIENCE_LEVELS, Profile
 
@@ -150,7 +151,7 @@ def candidate_text(p: Pick, venue_of: Callable[[Session], str | None]) -> dict:
         "level": s.level_number,
         "day": s.day.isoformat() if s.day else None,
         "time": f"{s.start:%H:%M}-{s.end:%H:%M}" if s.start and s.end else None,
-        "venue": venue_of(s),
+        "venue": place(venue_of(s), s.room),
         "topics": s.topics,
         "services": s.services[:6],
         "abstract": (s.abstract or "")[:400],

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from reinvent_agent.catalog.documents import SessionDoc
 from reinvent_agent.catalog.embeddings import Embedder
 from reinvent_agent.catalog.vector_store import Hit, VectorStore, matches
+from reinvent_agent.catalog.venues import sub_venue
 
 
 @dataclass
@@ -70,6 +71,7 @@ class SearchResult:
             "start": _hhmm(m.get("startMin")),
             "end": _hhmm(m.get("endMin")),
             "venue": m.get("venue"),
+            "sub_venue": sub_venue(m.get("room")),  # e.g. "Red Theater"
             "room": m.get("room"),
             "reservable": m.get("reservable"),
             "services": m.get("services"),

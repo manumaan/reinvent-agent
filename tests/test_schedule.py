@@ -157,3 +157,38 @@ def test_timeline_groups_real_schedule_by_day_and_flags_overlaps(tmp_path):
     assert rows["SVS401"]["overlaps"] == ["SVS201"]
     assert rows["Lunch"]["kind"] == "personal time" and rows["Lunch"]["end"] == "13:00"
     assert rows["Lunch"]["overlaps"] == ["SVS310"]  # SVS310 runs 10:30-12:30
+
+
+class StickyClient(WriteClient):
+    """Delete calls 'succeed' but AWS keeps STICKY; BOOM raises."""
+
+    def disassociate_favorite(self, event_id, sid):
+        if sid == "BOOM":
+            raise RuntimeError("500 from API")
+        if sid != "STICKY":
+            self.favorites.remove(sid)
+        return True
+
+
+def test_unfavorite_reports_what_aws_still_lists(tmp_path):
+    client = StickyClient()
+    client.favorites = ["STICKY", "OK", "BOOM"]
+    ms = MySchedule("ev", lambda: client, {}, path=tmp_path / "s.json")
+    r = ms.unfavorite(["STICKY", "BOOM", "OK"])
+    assert r.done == ["OK"]  # the error on BOOM didn't stop OK
+    assert r.failed["STICKY"].startswith("AWS still lists it")
+    assert "500" in r.failed["BOOM"]
+    assert ms.load().favorites == ["STICKY", "BOOM"]  # snapshot = what AWS says
+
+
+def test_snapshot_is_refreshed_after_a_minute(tmp_path, monkeypatch):
+    import reinvent_agent.schedule as sch
+
+    client = FakeClient(["A"])
+    ms = MySchedule("ev", lambda: client, {}, path=tmp_path / "s.json")
+    ms.load()
+    client.favorites = ["A", "B"]  # changed in the AWS portal
+    assert ms.load().favorites == ["A"] and client.calls == 1
+    now = time.time()
+    monkeypatch.setattr(sch.time, "time", lambda: now + sch.MAX_AGE_SECONDS + 1)
+    assert ms.load().favorites == ["A", "B"] and client.calls == 2

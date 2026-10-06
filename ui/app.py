@@ -19,6 +19,7 @@ import streamlit as st
 
 from reinvent_agent import accounts
 from reinvent_agent.catalog import source
+from reinvent_agent.catalog.venues import place, sub_venue
 from reinvent_agent.config import settings
 from reinvent_agent.events_api import EventsApiClient, Session
 from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
@@ -452,7 +453,8 @@ def session_card(p, venue_of, is_fav: bool, signed_in: bool) -> None:
             else "No fixed time"
         )  # fmt: skip
         st.caption(
-            f"{s.type or 'Session'} · L{s.level_number or '—'}  \n{when}  \n📍 {venue_of(s) or '—'}"
+            f"{s.type or 'Session'} · L{s.level_number or '—'}  \n{when}  \n"
+            f"📍 {place(venue_of(s), s.room) or '—'}"
         )
         b1, b2 = st.columns(2)
         if b1.button("Details", key=f"card_{s.session_id}", use_container_width=True):
@@ -481,7 +483,7 @@ def session_dialog(s, venue_of, is_fav: bool, signed_in: bool) -> None:
     )  # fmt: skip
     st.markdown(
         f"**{s.type or 'Session'}** · Level {s.level or '—'}  \n{when}  \n"
-        f"📍 {venue_of(s) or '—'}{f' · {s.room}' if s.room else ''}"
+        f"📍 {place(venue_of(s), s.room) or '—'}" + (f"  \nRoom: {s.room}" if s.room else "")
     )
     st.write(s.abstract or "_No abstract._")
     details = {
@@ -514,6 +516,12 @@ def search_tab(signed_in: bool):
     favorites = set(sched.favorites) if sched else set()
     reserved = set(sched.reserved) if sched else set()
     venue_of = my_schedule().venue_of
+    if missing := (favorites | reserved) - set(catalog):
+        st.warning(
+            f"{len(missing)} of your favorites/reservations aren't in your downloaded "
+            "catalog (sessions added since you downloaded it), so they can't show here. "
+            "Re-download it on the Catalog tab."
+        )
 
     left, right = st.columns([1, 3], gap="medium")
     with left:
@@ -555,7 +563,8 @@ def search_tab(signed_in: bool):
             )
         key = (q, filters.key(), group)
         results = [session_row(s, venue_of) for s in sessions]
-        cols = ("code", "title", "type", "level", "weekday", "day", "start", "end", "venue")
+        cols = ("code", "title", "type", "level", "weekday", "day", "start", "end", "venue",
+                "sub_venue")  # fmt: skip
         rows = [
             {
                 **({group.lower(): fx.GROUPS[group](s, venue_of)} if group else {}),
@@ -580,6 +589,7 @@ def session_row(s: Session, venue_of) -> dict:
         "start": s.start.strftime("%H:%M") if s.start else None,
         "end": s.end.strftime("%H:%M") if s.end else None,
         "venue": venue_of(s),
+        "sub_venue": sub_venue(s.room),
     }
 
 
@@ -743,6 +753,7 @@ SELECTED_ROW = "background-color: rgba(42, 120, 214, 0.18)"  # blue step 450, ti
 
 def icon_columns() -> dict:
     return {
+        "sub_venue": st.column_config.TextColumn("sub-venue"),
         "fav": st.column_config.TextColumn(FAV_ICON, width=40, help="Favorited"),
         "res": st.column_config.TextColumn(
             RES_ICON, width=40, help=f"{RES_ICON} reserved · {NO_RES_ICON} no reserved seating"
@@ -982,6 +993,7 @@ def schedule_tab(signed_in: bool):
                 "code": e.get("code"),
                 "title": e.get("title"),
                 "venue": e.get("venue"),
+                "sub-venue": e.get("sub_venue"),
                 "⚠️ overlaps": ", ".join(e["overlaps"]),
             }
             for e in items
@@ -1169,7 +1181,7 @@ def venues_tab(signed_in: bool):
                     "track": labels.get(cc.track_of(s), cc.track_of(s)),
                     "title": s.title,
                     "venue": v,
-                    "room": s.room,
+                    "sub-venue": sub_venue(s.room),
                 }
                 for s, v in others
             ],
@@ -1290,6 +1302,7 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
             "code": i.code,
             "title": i.title,
             "venue": i.venue,
+            "sub-venue": i.sub_venue,
             "backup for": ", ".join(draft.item(p).code for p in i.backup_for if draft.item(p)),
         }
         for i in draft.items
@@ -1299,7 +1312,7 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
         key="plan_editor",
         hide_index=True,
         use_container_width=True,
-        disabled=["day", "start", "end", "code", "title", "venue", "backup for"],
+        disabled=["day", "start", "end", "code", "title", "venue", "sub-venue", "backup for"],
         column_config={
             "action": st.column_config.SelectboxColumn(
                 options=list(ROLE_LABELS.values()), required=True, width="small"
@@ -1370,6 +1383,7 @@ def show_plan(plan) -> None:
                     "code": p.code,
                     "title": p.title,
                     "venue": p.venue,
+                    "sub-venue": p.sub_venue,
                     "backups": ", ".join(b.code for b in plan.backups_for(p.session_id)),
                 }
                 for p in sorted(days[day], key=lambda p: p.start or "")
@@ -1403,6 +1417,7 @@ def portal_checklist(plan) -> None:
             "day": p.day,
             "time": f"{p.start}-{p.end}" if p.start else "",
             "venue": p.venue,
+            "sub-venue": p.sub_venue,
             "backups (if full)": ", ".join(b.code for b in plan.backups_for(p.session_id)),
         }
         for n, p in enumerate(plan.primaries, 1)

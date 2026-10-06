@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, time
 
+from reinvent_agent.catalog.venues import sub_venue
 from reinvent_agent.events_api.models import Session
 
 MIN_GAP_MINUTES = 30  # shorter free stretches are not worth listing
@@ -29,6 +30,7 @@ class Slot:
     end: str
     venue: str | None
     reserved: bool = False
+    sub_venue: str | None = None  # e.g. "Red Theater"
 
 
 @dataclass
@@ -75,6 +77,7 @@ def _slot(s: Session, venue: str | None, reserved: set[str]) -> Slot:
         end=_hhmm(s.end),
         venue=venue,
         reserved=s.session_id in reserved,
+        sub_venue=sub_venue(s.room),
     )
 
 

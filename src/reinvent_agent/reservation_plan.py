@@ -19,6 +19,7 @@ from collections.abc import Callable, Iterable
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 
+from reinvent_agent.catalog.venues import sub_venue
 from reinvent_agent.events_api.models import Session
 
 PRIMARY, BACKUP = "primary", "backup"
@@ -41,6 +42,7 @@ class PlanItem:
     role: str = BACKUP
     priority: int = 2
     backup_for: list[str] = field(default_factory=list)  # primary session IDs covered
+    sub_venue: str | None = None  # e.g. "Red Theater"
 
     def overlaps(self, other: PlanItem) -> bool:
         return bool(
@@ -147,6 +149,7 @@ def plan_item(s: Session, venue: str | None, role: str = BACKUP, priority: int =
         venue=venue,
         role=role,
         priority=priority,
+        sub_venue=sub_venue(s.room),
     )
 
 
