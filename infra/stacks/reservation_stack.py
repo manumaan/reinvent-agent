@@ -1,7 +1,8 @@
-"""The unattended reservation run: Lambda + one-time EventBridge Scheduler jobs + SNS.
+"""The unattended reservation run: Lambda + EventBridge Scheduler jobs + SNS.
 
-Times come from ``reinvent_agent.reservations.SCHEDULE`` (Oct 6, 2026: checks at
-8:30 AM / 4:30 PM PDT, runs at 8:58 AM / 4:58 PM PDT, plus a reminder on Oct 5).
+Jobs come from ``reinvent_agent.reservations.SCHEDULE``: a sign-in reminder on Oct 7
+and a poll every 2 minutes through Oct 8 (PDT), the day the Events API opens for
+reservations (time unannounced). Seats open in the re:Invent portal on Oct 6, by hand.
 The Lambda package is built locally with uv (no Docker): our package plus httpx,
 pydantic and tzdata as manylinux wheels; boto3 comes with the Lambda runtime.
 """
@@ -11,6 +12,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from datetime import UTC
 from pathlib import Path
 
 import jsii
@@ -113,23 +115,32 @@ class ReservationStack(Stack):
             self, "SchedulerRole", assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com")
         )
         self.function.grant_invoke(role)
-        for name, when, action, label in SCHEDULE:
+        utc = "%Y-%m-%dT%H:%M:%SZ"
+        for job in SCHEDULE:
+            if job.at:
+                timing = {"schedule_expression": f"at({job.at:%Y-%m-%dT%H:%M:%S})"}
+            else:
+                timing = {
+                    "schedule_expression": f"rate({job.every_minutes} minutes)",
+                    "start_date": job.start.astimezone(UTC).strftime(utc),
+                    "end_date": job.end.astimezone(UTC).strftime(utc),
+                }
             scheduler.CfnSchedule(
                 self,
-                f"Schedule-{name}",
-                name=f"reinvent-reservations-{name}",
-                description=f"re:Invent reserved seating: {label} ({action})",
-                schedule_expression=f"at({when:%Y-%m-%dT%H:%M:%S})",
+                f"Schedule-{job.name}",
+                name=f"reinvent-reservations-{job.name}",
+                description=f"re:Invent reservations: {job.label} ({job.action})",
                 schedule_expression_timezone="America/Los_Angeles",
                 flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(mode="OFF"),
                 target=scheduler.CfnSchedule.TargetProperty(
                     arn=self.function.function_arn,
                     role_arn=role.role_arn,
-                    input=json.dumps({"action": action, "label": label}),
+                    input=json.dumps({"action": job.action, "label": job.label}),
                     retry_policy=scheduler.CfnSchedule.RetryPolicyProperty(
-                        maximum_retry_attempts=0  # a late retry could reserve at a bad time
+                        maximum_retry_attempts=0  # the poll itself retries every 2 minutes
                     ),
                 ),
+                **timing,
             )
 
         CfnOutput(self, "ReservationTopicArn", value=self.topic.topic_arn)

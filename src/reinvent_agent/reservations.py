@@ -1,7 +1,10 @@
-"""Reserved seating: release times and whether a session can be reserved.
+"""Reserved seating: when and where seats can be reserved, and per-session status.
 
-Seats release in two phases on October 6, 2026: the first half of reservable seats
-at 9:00 AM PDT, the second half at 5:00 PM PDT. Until then ReserveSessions answers 409.
+Updated 2026-10-05 (AWS): seat reservations open in the **re:Invent portal** on
+October 6, 2026 in two phases -- the first half of reservable seats at 9:00 AM PDT, the
+second half at 5:00 PM PDT. The **Events API** (ReserveSessions / CancelReservation,
+which this app and the unattended run use) opens on **October 8**; no time was given,
+so the unattended run polls through that day. Until then ReserveSessions answers 409.
 
 Before release the Events API reports ``isReservable: false`` and no
 ``seatAvailability`` for every session, so "not reservable" is only known once the
@@ -12,16 +15,21 @@ catalog carries reservation data (some session reservable) or a session is marke
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from reinvent_agent.events_api.models import SEAT_WALK_UP, Session
 
 EVENT_TZ = ZoneInfo("America/Los_Angeles")
+# Portal (manual) releases on Oct 6.
 RELEASES = (
     ("first half of reservable seats", datetime(2026, 10, 6, 9, 0, tzinfo=EVENT_TZ)),
     ("second half of reservable seats", datetime(2026, 10, 6, 17, 0, tzinfo=EVENT_TZ)),
 )
+# Events API (this app, the unattended run): the day it opens; the hour is unannounced.
+API_OPENS = datetime(2026, 10, 8, 0, 0, tzinfo=EVENT_TZ)
+API_POLL_UNTIL = API_OPENS + timedelta(days=1)
 
 RESERVABLE, WALK_UP, NOT_RESERVABLE, UNKNOWN = "reservable", "walk-up", "not reservable", "unknown"
 
@@ -47,18 +55,33 @@ def format_time(at: datetime, tz: str | None = None) -> str:
 
 
 def release_note(tz: str | None = None, now: datetime | None = None) -> str | None:
-    """What to tell the attendee about reserved seating right now (None once all released)."""
+    """What to tell the attendee about reserving right now (None once the API is open)."""
     now = now or datetime.now(EVENT_TZ)
+    api = (
+        f"The API this app uses (Reserve button, unattended run) opens on "
+        f"{API_OPENS:%A, %B %-d} (time not announced)."
+    )
     pending = [(what, at) for what, at in RELEASES if at > now]
-    if not pending:
-        return None
-    parts = [f"the {what} at {format_time(at, tz)}" for what, at in pending]
     if len(pending) == len(RELEASES):
+        a, b = (f"the {w} at {format_time(at, tz)}" for w, at in RELEASES)
         return (
-            f"Reserved seats release in two phases on Tuesday, October 6, 2026: "
-            f"{parts[0]} and {parts[1]}."
+            f"Seat reservations open in the **re:Invent portal** on Tuesday, October 6: "
+            f"{a} and {b}. Reserve there by hand. {api}"
         )
-    return f"The first half of reserved seats is out; {parts[0]} (October 6)."
+    if pending:
+        what, at = pending[0]
+        return (
+            f"The re:Invent portal is open for the first half of seats; the {what} "
+            f"release at {format_time(at, tz)} today. {api}"
+        )
+    if now < API_OPENS:
+        return f"Reserve in the re:Invent portal. {api}"
+    if now < API_POLL_UNTIL:
+        return (
+            "The Events API opens today (time not announced); the unattended run checks "
+            "every 2 minutes and reserves your approved plan as soon as it opens."
+        )
+    return None
 
 
 class ReservationInfo:
@@ -85,17 +108,30 @@ class ReservationInfo:
         return self.status(session_id) not in (WALK_UP, NOT_RESERVABLE)
 
 
-# The unattended run: one-time EventBridge Scheduler jobs (infra/stacks/reservation_stack).
-# (name, when, action, label); "run" jobs start 2 minutes early and poll until release.
+@dataclass(frozen=True)
+class Job:
+    """One EventBridge Scheduler job for the unattended run (reservation_stack)."""
+
+    name: str
+    action: str  # preflight | poll
+    label: str
+    at: datetime | None = None  # one-time
+    start: datetime | None = None  # recurring window [start, end)
+    end: datetime | None = None
+    every_minutes: int | None = None
+
+    def describe(self, tz: str | None = None) -> str:
+        if self.at:
+            return f"{self.at:%a %b %-d}, {format_time(self.at, tz)}"
+        return (
+            f"{self.start:%a %b %-d}, every {self.every_minutes} min from "
+            f"{format_time(self.start, tz)} until {format_time(self.end, tz)} the next day"
+        )
+
+
 SCHEDULE = (
-    ("reminder", datetime(2026, 10, 5, 18, 0, tzinfo=EVENT_TZ), "preflight", "day before"),
-    ("check-1", datetime(2026, 10, 6, 8, 30, tzinfo=EVENT_TZ), "preflight", "9 AM check"),
-    ("run-1", datetime(2026, 10, 6, 8, 58, tzinfo=EVENT_TZ), "run", "first release"),
-    ("check-2", datetime(2026, 10, 6, 16, 30, tzinfo=EVENT_TZ), "preflight", "5 PM check"),
-    ("run-2", datetime(2026, 10, 6, 16, 58, tzinfo=EVENT_TZ), "run", "second release"),
-)
-OPEN_GRACE_MINUTES = 10  # keep polling this long after a release time before giving up
-
-
-def release_for(label: str) -> datetime:
-    return RELEASES[0][1] if label == "first release" else RELEASES[1][1]
+    Job("reminder", "preflight", "day before the API opens",
+        at=datetime(2026, 10, 7, 18, 0, tzinfo=EVENT_TZ)),
+    Job("api-poll", "poll", "API opening", start=API_OPENS, end=API_POLL_UNTIL,
+        every_minutes=2),
+)  # fmt: skip

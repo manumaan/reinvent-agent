@@ -327,3 +327,73 @@ def test_lambda_handler_run_uses_approved_plan(monkeypatch):
     busy = lambda_handler.handler({"action": "run", "label": "first release"}, None)
     assert busy == {"ok": False, "status": "busy"}
     assert notifier.messages[-1][0].endswith("skipped")
+
+
+def test_poll_is_silent_while_closed_then_runs_once_when_open(monkeypatch):
+    from reinvent_agent import lambda_handler
+
+    clock = Clock()
+    api = FakeApi(clock, closed_polls=2)
+    runner, notifier = runner_for(api, clock)
+    store = PlanStore(FakeTable(), "u", "ev")
+    store.approve(make_plan(item("A", "09:00", "10:00")))
+    monkeypatch.setattr(lambda_handler, "_deps", lambda: (runner, store, object()))
+    poll = {"action": "poll", "label": "API opening"}
+    for _ in range(2):  # API still closed: one probe each, no email, nothing saved
+        assert lambda_handler.handler(poll, None) == {"ok": False, "status": "closed"}
+    assert notifier.messages == [] and store.runs() == []
+    assert lambda_handler.handler(poll, None) == {"ok": True, "status": "done"}
+    assert api.held == ["A"] and len(notifier.messages) == 1
+    calls = len(api.calls)
+    assert lambda_handler.handler(poll, None)["status"] == "already done"
+    assert len(api.calls) == calls
+    # Approving a new plan re-arms the poll.
+    store.approve(make_plan(item("A", "09:00", "10:00"), item("B", "11:00", "12:00")))
+    assert lambda_handler.handler(poll, None)["status"] == "done" and "B" in api.held
+
+
+def test_poll_alerts_on_sign_in_problems_at_most_hourly(monkeypatch):
+    from reinvent_agent import lambda_handler
+
+    class Broken:
+        def get_schedule(self, event_id):
+            raise RuntimeError("refresh failed")
+
+    clock = Clock()
+    runner, notifier = runner_for(Broken(), clock)
+    store = PlanStore(FakeTable(), "u", "ev")
+    store.approve(make_plan(item("A", "09:00", "10:00")))
+    monkeypatch.setattr(lambda_handler, "_deps", lambda: (runner, store, object()))
+    poll = {"action": "poll", "label": "API opening"}
+    for _ in range(5):
+        lambda_handler.handler(poll, None)
+        clock.t += 120
+    assert len(notifier.messages) == 1 and "auth failed" in notifier.messages[0][0]
+    clock.t += 3600
+    lambda_handler.handler(poll, None)
+    assert len(notifier.messages) == 2
+
+
+def test_errors_outside_the_runner_still_email(monkeypatch):
+    from reinvent_agent import lambda_handler
+
+    clock = Clock()
+    runner, notifier = runner_for(FakeApi(clock), clock)
+
+    class BrokenTable(FakeTable):
+        def put_item(self, **kw):
+            raise RuntimeError("AccessDenied")
+
+    store = PlanStore(BrokenTable(), "u", "ev")
+    monkeypatch.setattr(lambda_handler, "_deps", lambda: (runner, store, object()))
+    with pytest.raises(RuntimeError):
+        lambda_handler.handler({"action": "run", "label": "cloud test"}, None)
+    assert notifier.messages[-1][0] == "ERROR: re:Invent reservations (cloud test)"
+
+
+def test_backups_prefer_the_same_venue():
+    other = item("FAR", "10:00", "11:00", BACKUP)
+    other.venue = "Wynn"
+    near = item("NEAR", "10:30", "11:00", BACKUP)  # less overlap, but same venue
+    plan = make_plan(item("P", "10:00", "11:00"), other, near)
+    assert [b.code for b in plan.backups_for("P")] == ["NEAR", "FAR"]

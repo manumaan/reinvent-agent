@@ -1,7 +1,15 @@
 """AWS Lambda entry point for the unattended reservation run.
 
-EventBridge Scheduler invokes it with ``{"action": "preflight" | "run", "label": ...}``
-(see ``reservations.SCHEDULE``). Environment: TOKEN_SECRET_ARN, PLANS_TABLE, TOPIC_ARN,
+EventBridge Scheduler invokes it (see ``reservations.SCHEDULE``) with
+``{"action": ..., "label": ...}``:
+
+* ``preflight`` -- sign-in + plan check; always emails the result.
+* ``poll`` -- every 2 minutes on Oct 8, when the Events API opens at an unannounced
+  time: one probe; silent while closed; once open, reserves the approved plan, emails
+  the report and marks itself done. Problems are emailed at most once an hour.
+* ``run`` -- reserve now (manual, or to test the cloud path): one probe, no waiting
+  unless ``wait_seconds`` is given; always emails the report.
+ Environment: TOKEN_SECRET_ARN, PLANS_TABLE, TOPIC_ARN,
 EVENT_ID. Only the Events API client and the reservation modules are imported here, so
 the deployment package stays small (httpx, pydantic, tzdata; boto3 is in the runtime).
 """
@@ -9,7 +17,6 @@ the deployment package stays small (httpx, pydantic, tzdata; boto3 is in the run
 from __future__ import annotations
 
 import os
-from datetime import timedelta
 
 
 def _deps():
@@ -36,15 +43,39 @@ def _deps():
     return runner, store, stored
 
 
-def handler(event, context):
-    from reinvent_agent.reservations import OPEN_GRACE_MINUTES, release_for
+ALERT_EVERY_SECONDS = 3600
 
+
+def handler(event, context):
     action = event.get("action", "preflight")
     label = event.get("label", action)
     runner, store, stored = _deps()
+    try:
+        return _handle(action, label, event, context, runner, store, stored)
+    except Exception as e:  # anything outside the runner's own handling: still email
+        if action != "poll" or _alert_due(store, runner):
+            runner.notifier.notify(
+                f"ERROR: re:Invent reservations ({label})",
+                f"The {action} job failed: {e}. Reserve from the app if the API is open.",
+            )
+        raise
+
+
+def _alert_due(store, runner) -> bool:
+    last = store.flag("alert")
+    if last and runner.clock() - last < ALERT_EVERY_SECONDS:
+        return False
+    store.set_flag("alert", runner.clock())
+    return True
+
+
+def _handle(action, label, event, context, runner, store, stored):
+    from reinvent_agent.reservation_plan import LeaseBusy, dynamo_lease
+
     if stored is None:
         msg = "No sign-in stored for the unattended run. In the app: Plans -> Enable."
-        runner.notifier.notify(f"ACTION NEEDED: re:Invent reservations ({label})", msg)
+        if action != "poll" or _alert_due(store, runner):
+            runner.notifier.notify(f"ACTION NEEDED: re:Invent reservations ({label})", msg)
         return {"ok": False, "message": msg}
 
     if action == "preflight":
@@ -54,28 +85,38 @@ def handler(event, context):
             runner.notifier.notify(
                 f"ACTION NEEDED: re:Invent reservations ({label})",
                 "Sign-in is fine, but no reservation plan is approved. Approve one in the "
-                "app (Plans tab) before the release.",
+                "app (Plans tab) before the API opens.",
             )
         return {"ok": ok, "message": msg, "plan_version": plan.version if plan else None}
 
-    if action == "run":
-        from reinvent_agent.reservation_plan import LeaseBusy, dynamo_lease
+    if action not in ("poll", "run"):
+        raise ValueError(f"unknown action {action!r}")
+    if action == "poll" and store.flag("api-run-done"):
+        return {"ok": True, "status": "already done"}
 
-        release = release_for(label)
-        deadline = release + timedelta(minutes=OPEN_GRACE_MINUTES)
-        # Leave 2 minutes of Lambda time for reading back, saving and notifying.
-        remaining = context.get_remaining_time_in_millis() / 1000 if context else 900
-        deadline_ts = min(deadline.timestamp(), runner.clock() + remaining - 120)
-        # One run at a time (a Lambda lives at most 15 minutes, so the lease does too).
-        run_lease = dynamo_lease(store.table, name="reservation-run", ttl=900, wait=0)
-        try:
-            with run_lease():
-                report = runner.run(store.approved(), label, deadline_ts)
+    # Leave 2 minutes of Lambda time for reading back, saving and notifying.
+    remaining = context.get_remaining_time_in_millis() / 1000 if context else 900
+    wait = min(float(event.get("wait_seconds", 0)), remaining - 120)
+    deadline = runner.clock() + max(wait, 0)
+    quiet = {"closed", "auth_failed", "error", "no_plan"} if action == "poll" else ()
+    # One run at a time (a Lambda lives at most 15 minutes, so the lease does too).
+    lease = dynamo_lease(store.table, name="reservation-run", ttl=900, wait=0)
+    try:
+        with lease():
+            report = runner.run(store.approved(), label, deadline, quiet=quiet)
+            if report.status != "closed":
                 store.save_run(report.to_dict())
-        except LeaseBusy:
-            msg = "Another reservation run is already in progress; this one stopped."
-            runner.notifier.notify(f"re:Invent reservations ({label}): skipped", msg)
-            return {"ok": False, "status": "busy"}
-        return {"ok": report.status == "done", "status": report.status}
+    except LeaseBusy:
+        if action == "run":
+            runner.notifier.notify(
+                f"re:Invent reservations ({label}): skipped",
+                "Another reservation run is already in progress; this one stopped.",
+            )
+        return {"ok": False, "status": "busy"}
 
-    raise ValueError(f"unknown action {action!r}")
+    if action == "poll":
+        if report.status == "done":
+            store.set_flag("api-run-done", runner.clock())
+        elif report.status != "closed" and _alert_due(store, runner):
+            runner.notifier.notify(report.subject(), report.text())
+    return {"ok": report.status == "done", "status": report.status}

@@ -1,7 +1,7 @@
 # M0 spike: Builder ID auth and unattended reservations
 
-**Question (design Q1):** can the Oct 6 reservation run work without the user present?
-**Answer: yes, with one local sign-in shortly before the run (plan: evening of Oct 5, PDT).**
+**Question (design Q1):** can the Oct 8 reservation run work without the user present?
+**Answer: yes, with one local sign-in shortly before the run (plan: evening of Oct 7, PDT).**
 
 ## What the Events API auth requires
 From the developer guide's Authentication pages, read in full on 2026-09-25: *Endpoints and values*, *Signing an attendee in*, *Keeping the attendee signed in*, *Signing an attendee out*, *Handling tokens safely*.
@@ -32,7 +32,7 @@ cloud:   TokenProvider(SecretsManagerTokenStore)
 Implemented in `src/reinvent_agent/events_api/auth.py`; tests are in `tests/test_auth.py`.
 
 ## Consequences for the plan
-1. **Sign in the evening before reserved seating releases (Oct 5, PDT).** Refreshing keeps the access token fresh but cannot outlive the Builder ID session, whose lifetime is undocumented, so signing in a month early is not safe. At T-30 min the reservation job does a pre-flight refresh plus `GetSchedule`. If that fails, it notifies you straight away (SNS) with the one command to run, while there's still time.
+1. **Sign in the evening before the API opens (Oct 7, PDT).** Refreshing keeps the access token fresh but cannot outlive the Builder ID session, whose lifetime is undocumented, so signing in a month early is not safe. At T-30 min the reservation job does a pre-flight refresh plus `GetSchedule`. If that fails, it notifies you straight away (SNS) with the one command to run, while there's still time.
 2. **Only one writer at a time.** Rotation means two processes refreshing concurrently can invalidate each other. M3 wraps refresh in a DynamoDB conditional-write lease. In-process, `TokenProvider` already serializes with a lock.
 3. **Sign-in happens in the local Streamlit app (or CLI)**, never in a hosted UI, because only a localhost redirect is allowed. The login binds the first free port from 8484–8489 and sends the identical `redirect_uri` on the token exchange.
 4. **Fallback kept:** if the refresh fails at run time (revoked or expired), the reservation Lambda sends an SNS notification with the exact CLI command to run. The approved plan is kept, so re-running is one command.

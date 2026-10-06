@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 
 from reinvent_agent.events_api.client import OperationClosedError
@@ -158,8 +158,18 @@ class ReservationRunner:
 
     # --- run -------------------------------------------------------------------
 
-    def run(self, plan: ReservationPlan | None, label: str, open_deadline: float) -> RunReport:
-        """Reserve ``plan``; wait for seats to release until ``open_deadline`` (epoch)."""
+    def run(
+        self,
+        plan: ReservationPlan | None,
+        label: str,
+        open_deadline: float,
+        quiet: Iterable[str] = (),
+    ) -> RunReport:
+        """Reserve ``plan``; wait for seats to release until ``open_deadline`` (epoch).
+
+        ``quiet``: statuses not to notify about (the all-day poll stays silent while
+        the API is closed and rate-limits its own alerts).
+        """
         report = RunReport(label=label, started_at=self.clock())
         try:
             self._run(plan, report, open_deadline)
@@ -167,7 +177,8 @@ class ReservationRunner:
             report.status = "error"
             report.notes.append(f"The run stopped with an error: {e}")
         report.finished_at = self.clock()
-        self.notifier.notify(report.subject(), report.text())
+        if report.status not in set(quiet):
+            self.notifier.notify(report.subject(), report.text())
         return report
 
     def _schedule(self) -> set[str]:
@@ -204,8 +215,8 @@ class ReservationRunner:
         if result is None:
             report.status = "closed"
             report.notes.append(
-                "Reservations were still closed at the deadline. Nothing was reserved; "
-                "the next scheduled run will try again, or use Reserve in the app."
+                "Reservations were still closed (the Events API opens October 8). "
+                "Nothing was reserved."
             )
             return
         self._settle([first], result)

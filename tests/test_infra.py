@@ -105,9 +105,11 @@ def test_reservation_stack_schedules_lambda_and_topic():
     t.has_resource_properties(
         "AWS::Scheduler::Schedule",
         {
-            "ScheduleExpression": "at(2026-10-06T08:58:00)",
+            "ScheduleExpression": "rate(2 minutes)",
+            "StartDate": "2026-10-08T07:00:00Z",  # midnight PDT
+            "EndDate": "2026-10-09T07:00:00Z",
             "ScheduleExpressionTimezone": "America/Los_Angeles",
             "FlexibleTimeWindow": {"Mode": "OFF"},
-            "Target": Match.object_like({"Input": '{"action": "run", "label": "first release"}'}),
+            "Target": Match.object_like({"Input": '{"action": "poll", "label": "API opening"}'}),
         },
     )

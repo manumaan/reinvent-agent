@@ -88,12 +88,14 @@ class ReservationPlan:
         return next((i for i in self.items if i.session_id == session_id), None)
 
     def backups_for(self, primary_id: str) -> list[PlanItem]:
-        """Backups covering a primary: most overlap first, then priority, then time."""
+        """Backups covering a primary: same venue first (keeps a one-venue day intact
+        and saves walking), then most overlap, then priority, then time."""
         primary = self.item(primary_id)
         cands = [i for i in self.items if i.role == BACKUP and primary_id in i.backup_for]
         return sorted(
             cands,
             key=lambda b: (
+                bool(primary) and b.venue != primary.venue,
                 -b.overlap_minutes(primary) if primary else 0,
                 b.priority,
                 b.start or "",
@@ -233,7 +235,19 @@ class PlanStore:
         body = plan.to_json()
         self._put(f"plan#{self.event_id}#v{plan.version:04d}", body)  # history
         self._put(f"plan#{self.event_id}#approved", body)
+        self.clear_flag("api-run-done")  # a newly approved plan gets reserved again
         return plan
+
+    def flag(self, name: str) -> float | None:
+        """Epoch seconds a flag was set (e.g. "api-run-done", "alert"), or None."""
+        body = self._get(f"flag#{self.event_id}#{name}")
+        return float(body) if body else None
+
+    def set_flag(self, name: str, at: float | None = None) -> None:
+        self._put(f"flag#{self.event_id}#{name}", str(at or time.time()))
+
+    def clear_flag(self, name: str) -> None:
+        self.table.delete_item(Key=self._key(f"flag#{self.event_id}#{name}"))
 
     def withdraw(self) -> None:
         self.table.delete_item(Key=self._key(f"plan#{self.event_id}#approved"))

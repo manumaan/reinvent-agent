@@ -19,7 +19,7 @@ from reinvent_agent.config import settings
 from reinvent_agent.events_api import EventsApiClient, Session
 from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
 from reinvent_agent.llm import get_provider
-from reinvent_agent.reservations import ReservationInfo, release_note
+from reinvent_agent.reservations import API_OPENS, ReservationInfo, release_note
 from reinvent_agent.schedule import MySchedule
 
 FAV_ICON, RES_ICON, NO_RES_ICON = "⭐", "🎟️", "🚫"
@@ -557,7 +557,7 @@ def plans_tab(signed_in: bool):
     if pstore is None:
         return st.warning("Deploy ReinventAgentData to store reservation plans.")
 
-    st.subheader(f"{RES_ICON} Reservation plan for October 6")
+    st.subheader(f"{RES_ICON} Reservation plan")
     if note := release_note(viewer_tz()):
         st.info(f"🗓️ {note}")
     flash()
@@ -572,7 +572,12 @@ def plans_tab(signed_in: bool):
     if approved:
         with st.expander(f"2 · Approved plan v{approved.version}", expanded=True):
             show_plan(approved)
-    with st.expander("3 · Unattended run and notifications", expanded=bool(approved)):
+    with st.expander(
+        "📝 Oct 6: reserve by hand in the re:Invent portal (checklist)",
+        expanded=time.time() < API_OPENS.timestamp(),
+    ):
+        portal_checklist(approved or pstore.draft())
+    with st.expander("3 · Unattended run (Oct 8) and notifications", expanded=bool(approved)):
         unattended_section(approved)
     runs = pstore.runs(10)
     if runs:
@@ -625,9 +630,15 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
         "**Priority** sets the order: seats go to whoever asks first."
     )
     c1, c2 = st.columns([3, 1])
-    strategy = c1.radio("Start from", list(STRATEGIES), format_func=STRATEGIES.get, horizontal=True)
     draft = pstore.draft()
-    if c2.button("New draft from favorites", use_container_width=True) or draft is None:
+    options = list(STRATEGIES)
+    current = options.index(draft.strategy) if draft and draft.strategy in options else 0
+    strategy = c1.radio(
+        "Start from", options, index=current, format_func=STRATEGIES.get, horizontal=True
+    )
+    # Switching the strategy rebuilds the draft from favorites (edits are replaced).
+    rebuild = c2.button("Rebuild from favorites", use_container_width=True)
+    if rebuild or draft is None or draft.strategy != strategy:
         ids = list(dict.fromkeys(sched.reserved + sched.favorites))
         draft = build_plan(
             cfg.event_id, sched_.sessions(ids), sched_.venue_of, sched.reserved, strategy
@@ -734,19 +745,67 @@ def show_plan(plan) -> None:
         )
 
 
+def portal_checklist(plan) -> None:
+    """The plan in reservation order, to work through by hand in the portal on Oct 6."""
+    from reinvent_agent.reservation_plan import PRIORITIES
+    from reinvent_agent.reservations import RELEASES, format_time
+
+    if plan is None:
+        return st.info("Build a plan first (section 1).")
+    tz = viewer_tz()
+    st.markdown(
+        "On **October 6** seats can only be reserved **by hand in the re:Invent portal** "
+        f"(first half at {format_time(RELEASES[0][1], tz)}, second half at "
+        f"{format_time(RELEASES[1][1], tz)}). The API, and so this app's Reserve and the "
+        "unattended run, opens on **October 8**. Work down this list in order: search the "
+        "portal by code; if a session is full, try its backups."
+    )
+    rows = [
+        {
+            "#": n,
+            "priority": PRIORITIES[p.priority],
+            "code": p.code,
+            "title": p.title,
+            "day": p.day,
+            "time": f"{p.start}-{p.end}" if p.start else "",
+            "venue": p.venue,
+            "backups (if full)": ", ".join(b.code for b in plan.backups_for(p.session_id)),
+        }
+        for n, p in enumerate(plan.primaries, 1)
+    ]
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(rows[0]) if rows else ["#"])
+    writer.writeheader()
+    writer.writerows(rows)
+    st.download_button(
+        "Download checklist (CSV)", buf.getvalue(), "reinvent-portal-checklist.csv", "text/csv"
+    )
+    st.caption(
+        "Whatever you reserve in the portal shows up in your schedule; the Oct 8 run skips "
+        "it and only reserves what is still missing."
+    )
+
+
 def unattended_section(approved) -> None:
-    from reinvent_agent.reservations import SCHEDULE, format_time
+    from reinvent_agent.reservations import SCHEDULE
 
     tz = viewer_tz()
     st.markdown(
         "The cloud job signs in with a copy of your Builder ID tokens (Secrets Manager) and "
-        "runs at these times, even with your laptop closed:"
+        "runs at these times, even with your laptop closed. On Oct 8 it checks every 2 "
+        "minutes, stays silent while the API is closed, and reserves your approved plan "
+        "(minus anything you already hold) as soon as it opens, then emails you."
     )
     st.dataframe(
         [
-            {"when": f"{when:%a %b %-d}, {format_time(when, tz)}", "what": label,
-             "does": "reserve the approved plan" if action == "run" else "check sign-in + plan"}
-            for _n, when, action, label in SCHEDULE
+            {"when": job.describe(tz), "what": job.label,
+             "does": "reserve the approved plan once the API opens" if job.action == "poll"
+             else "check sign-in + plan, email you"}
+            for job in SCHEDULE
         ],
         hide_index=True,
         use_container_width=True,
@@ -756,8 +815,8 @@ def unattended_section(approved) -> None:
             "The scheduled job isn't deployed yet: run `cd infra && npx aws-cdk@2 deploy --all`."
         )
     st.caption(
-        "Sign in again on the evening of Oct 5 (PDT) and re-enable: the Builder ID session "
-        "has its own lifetime, so tokens from weeks earlier may no longer work."
+        "Sign in again on the evening of Oct 7 (PDT) and press Refresh cloud sign-in: the "
+        "Builder ID session has its own lifetime, so older tokens may no longer work."
     )
     c1, c2 = st.columns(2)
     if accounts.unattended_enabled():
@@ -785,7 +844,7 @@ def unattended_section(approved) -> None:
         set_flash(("success", f"Check {email} for AWS's confirmation link."))
 
     st.markdown("**Test now**")
-    t1, t2 = st.columns(2)
+    t1, t2, t3 = st.columns(3)
     check_help = "Invokes the Lambda: signs in as you, reads your schedule, emails you."
     if t1.button("Run the cloud check now", use_container_width=True, help=check_help):
         try:
@@ -793,9 +852,21 @@ def unattended_section(approved) -> None:
         except Exception as e:
             set_flash(("error", f"Cloud check failed: {e}"))
         set_flash(("success" if result.get("ok") else "error", result.get("message", str(result))))
-    if t2.button(f"{RES_ICON} Reserve the plan now (this computer)", use_container_width=True,
+    run_help = (
+        "Invokes the exact Oct 8 code in the Lambda, once, without waiting. Before the API "
+        "opens it gets 'closed' and emails a 'closed' report (nothing reserved). Once the "
+        "API is open it reserves your approved plan for real."
+    )
+    if t2.button("Test the cloud reserve run", use_container_width=True,
+                 disabled=approved is None, help=run_help):  # fmt: skip
+        try:
+            result = accounts.invoke_cloud("run", "cloud test", cfg)
+        except Exception as e:
+            set_flash(("error", f"Cloud run failed: {e}"))
+        set_flash(("info", f"Cloud run finished: {result.get('status')}. See Run history."))
+    if t3.button(f"{RES_ICON} Reserve the plan now (this computer)", use_container_width=True,
                  disabled=approved is None,
-                 help="Manual fallback: runs the same logic here, once."):  # fmt: skip
+                 help="Manual fallback from Oct 8: runs the same logic here, once."):  # fmt: skip
         from reinvent_agent.reservation_runner import ReservationRunner
 
         runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id)

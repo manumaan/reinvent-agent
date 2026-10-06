@@ -136,7 +136,9 @@ def subscribe(email: str, cfg: Settings | None = None) -> None:
     _sns(cfg).subscribe(TopicArn=cfg.reservation_topic_arn, Protocol="email", Endpoint=email)
 
 
-def invoke_cloud(action: str, label: str, cfg: Settings | None = None) -> dict:
+def invoke_cloud(
+    action: str, label: str, cfg: Settings | None = None, wait_seconds: int = 0
+) -> dict:
     """Run the deployed Lambda now (e.g. a preflight to test sign-in + email)."""
     import boto3
 
@@ -145,7 +147,9 @@ def invoke_cloud(action: str, label: str, cfg: Settings | None = None) -> dict:
         raise RuntimeError("Deploy ReinventAgentReservations first.")
     resp = boto3.client("lambda", region_name=cfg.region).invoke(
         FunctionName=cfg.reservation_function,
-        Payload=json.dumps({"action": action, "label": label}).encode(),
+        Payload=json.dumps(
+            {"action": action, "label": label, "wait_seconds": wait_seconds}
+        ).encode(),
     )
     body = json.loads(resp["Payload"].read() or b"null")
     if resp.get("FunctionError"):

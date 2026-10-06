@@ -10,7 +10,7 @@ so the interactive sign-in must run on the attendee's machine. After that:
 * refreshing does NOT extend the Builder ID sign-in session, which has its own
   lifetime, so a long-running process eventually needs a fresh interactive sign-in.
 
-That is what makes the unattended Oct 6 reservation run possible: sign in locally
+That is what makes the unattended Oct 8 reservation run possible: sign in locally
 shortly before, push the tokens to a shared ``TokenStore`` (Secrets Manager), and
 let the cloud side refresh -- always writing a rotated refresh token back.
 """

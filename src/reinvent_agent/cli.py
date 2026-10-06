@@ -450,7 +450,9 @@ def _my_schedule(cfg):
     )
 
 
-reserve_app = typer.Typer(no_args_is_help=True, help="Reservation plan and the Oct 6 run")
+reserve_app = typer.Typer(
+    no_args_is_help=True, help="Reservation plan, Oct 6 portal checklist, Oct 8 run"
+)
 app.add_typer(reserve_app, name="reserve")
 
 
@@ -477,7 +479,7 @@ def _print_plan(plan) -> None:
 def reserve_status():
     """Approved plan, unattended switch, schedule and recent runs."""
     from reinvent_agent.accounts import subscriptions, unattended_enabled
-    from reinvent_agent.reservations import SCHEDULE, format_time
+    from reinvent_agent.reservations import SCHEDULE
 
     store = _plan_store()
     plan = store.approved()
@@ -494,8 +496,8 @@ def reserve_status():
            or "none (reinvent-agent reserve notify EMAIL)")
     )  # fmt: skip
     typer.echo("Schedule:")
-    for _name, when, action, label in SCHEDULE:
-        typer.echo(f"  {when:%a %b %-d} {format_time(when)}  {label} ({action})")
+    for job in SCHEDULE:
+        typer.echo(f"  {job.describe()}  {job.label} ({job.action})")
     for r in store.runs(5):
         typer.echo(f"Run {r['label']}: {r['status']}, {len(r['reserved'])} reserved, "
                    f"{len(r['failed'])} not")  # fmt: skip
@@ -555,9 +557,17 @@ def reserve_preflight(cloud: bool = typer.Option(False, help="Run it in the depl
 @reserve_app.command("run")
 def reserve_run(
     wait_minutes: float = typer.Option(0, help="Keep polling this long if still closed"),
+    cloud: bool = typer.Option(False, help="Run it in the deployed Lambda (tests that path)"),
 ):
-    """Reserve the approved plan now from this machine (manual fallback)."""
+    """Reserve the approved plan now (manual fallback; the API opens Oct 8)."""
     import time
+
+    if cloud:
+        from reinvent_agent.accounts import invoke_cloud
+
+        payload_wait = int(wait_minutes * 60)
+        typer.echo(invoke_cloud("run", "cloud test", wait_seconds=payload_wait))
+        return
 
     from reinvent_agent.reservation_runner import ReservationRunner
 

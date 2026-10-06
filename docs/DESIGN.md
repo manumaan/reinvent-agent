@@ -21,7 +21,7 @@ Sources: the developer guide pages for ListEvents, ListSessions, GetSession, Get
 | `GetSession` | token | Fresh detail and fullness check just before reserving |
 | `GetSchedule` | token | Your reservations, favorites and personal time, which the optimizer treats as constraints |
 | `AssociateFavorites` (1 to 10 per call) | token | Auto-favorite |
-| `ReserveSessions` | token | Auto-reserve. Seats release in two phases on **Oct 6, 2026**: the first half of reservable seats at 9:00 AM PDT, the second half at 5:00 PM PDT (updated 2026-09-28; earlier notes said Oct 8 for the API) |
+| `ReserveSessions` | token | Auto-reserve. **Opens through the API on Oct 8, 2026** (time not announced; confirmed by AWS 2026-10-05). In the re:Invent **portal** seats open on Oct 6 in two phases (first half 9:00 AM PDT, second half 5:00 PM PDT), by hand only |
 | `CreatePersonalTime` | token | Block lunch, travel and meetings |
 
 **Session fields** (exact, from `openapi.json`): `sessionId`, `title`, `abbreviation` (code), `abstract`, `type`, `level`, `venue`, `room`, `isAllDaySession`, `isReservable`, `seatAvailability` (`available|limited|veryLimited|unavailable|walkUp`), `sessionTime {date, time, length, timezone}`, `speakers[{name}]`, and the taxonomy lists `tracks`, `topics`, `industries`, `areasOfInterest`, `roles`, `services`, `segments`, `features`, `customerPersonas`, `experiences`, `additionalActivities`, `focusAreas`. Only `sessionId` and `title` are guaranteed.
@@ -33,7 +33,7 @@ Sources: the developer guide pages for ListEvents, ListSessions, GetSession, Get
 
 **Behaviour that shapes the design** (from the guide's *Quotas* and *Handling errors* pages):
 - **Quotas per attendee per minute:** `ReserveSessions` and `AssociateFavorites` 30 *sessions* (batching saves round trips, not quota). `ListSessions` and `GetSession` 120. `GetSchedule` 60. `429` comes with `Retry-After`.
-- **`409` = operation closed.** Reservations return 409 until reserved seating opens. The Oct 6 job polls on 409, and runs again for the 5:00 PM PDT second release.
+- **`409` = operation closed.** Reservations return 409 until reserved seating opens. On Oct 8 the job polls every 2 minutes and runs once the API stops answering 409.
 - **Writes have no idempotency key.** After an unknown outcome, reconcile from `GetSchedule` (the source of truth) and send only what is missing. Single removals are safe to retry (404 = already gone).
 - **`403` with a JSON body** means you are not registered for the event. **`403` with no body** means the edge is refusing you, so slow down.
 - **Any session field may be absent.** Pages vary in size: only a missing `nextToken` ends the walk.
@@ -77,14 +77,14 @@ flowchart LR
   T2 --> DDB
   T3 --> VG & LOC[Amazon Location Service]
 
-  SCH[EventBridge Scheduler<br/>one-time: Oct 6, 9 AM + 5 PM PDT] --> RES[Reservation Lambda]
+  SCH[EventBridge Scheduler<br/>every 2 min through Oct 8 PDT] --> RES[Reservation Lambda]
   RES --> AR
 ```
 
 ### Why AgentCore rather than classic Bedrock Agents
 - **MCP-native tools.** AgentCore Gateway serves all our tools as one MCP endpoint, which matches the "Bedrock agent + MCP" pitch.
 - **Schedule tools call the REST API, not the Events MCP server.** The Events MCP server expects an interactive client doing its own localhost OAuth, which a server-side agent cannot do. Our REST tools also add what an LLM-driven MCP call lacks: reconcile-from-`GetSchedule`, per-session failure handling and quota pacing. For development, the Events MCP server is still handy directly in Claude Code: `claude mcp add --transport http --scope user awsevents https://api.awsevents.com/mcp --callback-port 8484 --client-id 7vmom55m1qstvq8i71ph127bfq`.
-- **AgentCore Identity** stores each user's Builder ID OAuth token. That makes an unattended reservation run at 9 AM PDT on Oct 6 possible.
+- **AgentCore Identity** stores each user's Builder ID OAuth token. That makes an unattended reservation run on Oct 8 possible.
 - **Runtime** hosts a Strands agent (Python), which gives full control of the reasoning loop. Classic action groups are more rigid.
 - Fallback: if AgentCore is unavailable in the chosen region, the same Strands agent runs on Lambda with an MCP client.
 
@@ -125,7 +125,7 @@ goals text ──► (1) Preference extraction (LLM → JSON constraints)
 - The agent shows a diff (+ reserve, + favorite, + personal time). Nothing is written until you click **Approve**. The approved plan is saved in DynamoDB as `plan_version`.
 - **Favorites:** `AssociateFavorites` in batches of 10. Allowed right away.
 - **Personal time:** `CreatePersonalTime` for lunch and other blocks.
-- **Reservations (Oct 6, 9:00 AM and 5:00 PM PDT):** one-time EventBridge Scheduler jobs fire just before each release; sessions that miss the first half are retried at the second. The Lambda loads the approved plan and polls `ReserveSessions` with the first batch while it returns `409` (closed). Once open, it reserves in priority order, paced to the 30 sessions/min quota, so the highest-value sessions go first. After each batch it reads `GetSchedule` back as the source of truth. When a session is full it takes the next alternate that is still feasible, then re-runs the solver for the rest of the plan. It sends a summary email (SNS).
+- **Reservations (Oct 8, API):** an EventBridge Scheduler job polls every 2 minutes through Oct 8 PDT (the opening hour is unannounced); the first poll that gets through reserves the plan and marks it done. On Oct 6 the plan is worked by hand in the portal from a priority checklist; anything reserved there is skipped on Oct 8. The Lambda loads the approved plan and polls `ReserveSessions` with the first batch while it returns `409` (closed). Once open, it reserves in priority order, paced to the 30 sessions/min quota, so the highest-value sessions go first. After each batch it reads `GetSchedule` back as the source of truth. When a session is full it takes the next alternate that is still feasible, then re-runs the solver for the rest of the plan. It sends a summary email (SNS).
 
 ---
 
@@ -196,7 +196,7 @@ fixtures/         recorded API responses (sanitized)
 ```
 Python 3.12, uv, ruff and pytest, with GitHub Actions CI running lint, tests and `cdk synth`.
 
-## 9. Delivery plan (reserved seating releases **Oct 6**, 9 AM and 5 PM PDT)
+## 9. Delivery plan (portal opens **Oct 6**; API reservations open **Oct 8**)
 
 | Milestone | Target | Scope |
 |---|---|---|
@@ -221,7 +221,7 @@ Recommendations accepted: AgentCore + Strands, S3 Vectors + reranker, **Streamli
 
 | # | Question / risk | My proposal |
 |---|---|---|
-| Q1 | **Unattended auth:** can a Builder ID token (or its refresh token) be stored and used at 9 AM PDT Oct 6 without you present? | Spike in M0. If it can't, fall back to a push notification plus one-tap "Run reservations now". |
+| Q1 | **Unattended auth:** can a Builder ID token (or its refresh token) be stored and used on Oct 8 without you present? | Spike in M0. If it can't, fall back to a push notification plus one-tap "Run reservations now". |
 | Q2 | **ToS / fairness** of automated reservation | Only reserve your approved plan, for your own account, at human-like pace (no hammering). Respect rate limits. |
 | Q3 | **Network access:** this cloud sandbox is blocked from `docs.aws.amazon.com` and `api.awsevents.com` | Allow both hosts in the environment's network policy, or commit the OpenAPI spec to the repo. Until then I'll build against recorded fixtures. |
 | Q4 | Is re:Invent 2025's catalog still served, for "what's new"? | Check in M0. If not, use a static snapshot. |

@@ -24,13 +24,28 @@ def test_times_in_event_and_viewer_timezone():
     assert format_time(FIRST, "Not/AZone") == "9:00 AM PDT"
 
 
-def test_release_note_by_phase():
-    before = release_note("Asia/Kolkata", now=datetime(2026, 9, 28, tzinfo=EVENT_TZ))
-    assert "two phases on Tuesday, October 6, 2026" in before
+def test_release_note_portal_then_api():
+    before = release_note("Asia/Kolkata", now=datetime(2026, 10, 5, tzinfo=EVENT_TZ))
+    assert "re:Invent portal** on Tuesday, October 6" in before
     assert "9:00 AM PDT (9:30 PM IST)" in before and "5:00 PM PDT" in before
+    assert "opens on Thursday, October 8" in before
     between = release_note(now=datetime(2026, 10, 6, 12, 0, tzinfo=EVENT_TZ))
-    assert between.startswith("The first half") and "5:00 PM PDT" in between
-    assert release_note(now=datetime(2026, 10, 7, tzinfo=EVENT_TZ)) is None
+    assert "second half of reservable seats release at 5:00 PM PDT" in between
+    gap = release_note(now=datetime(2026, 10, 7, tzinfo=EVENT_TZ))
+    assert gap.startswith("Reserve in the re:Invent portal") and "October 8" in gap
+    api_day = release_note(now=datetime(2026, 10, 8, 10, 0, tzinfo=EVENT_TZ))
+    assert "every 2 minutes" in api_day
+    assert release_note(now=datetime(2026, 10, 9, 1, 0, tzinfo=EVENT_TZ)) is None
+
+
+def test_schedule_is_reminder_then_all_day_poll_on_oct_8():
+    from reinvent_agent.reservations import API_OPENS, SCHEDULE
+
+    reminder, poll = SCHEDULE
+    assert reminder.action == "preflight" and reminder.at < API_OPENS
+    assert (poll.action, poll.every_minutes) == ("poll", 2)
+    assert poll.start == API_OPENS and (poll.end - poll.start).days == 1
+    assert "every 2 min from 12:00 AM PDT (12:30 PM IST)" in poll.describe("Asia/Kolkata")
 
 
 def s(sid, reservable=False, seats=None):
