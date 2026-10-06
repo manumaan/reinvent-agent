@@ -95,3 +95,30 @@ def resolve(file: str | Path | None, event_id: str, bucket: str | None) -> str:
     if local.exists() or not bucket:
         return str(local)
     return s3_uri(bucket, event_id)
+
+
+# --- archive: every session ever seen, so withdrawn favorites keep a name -----------
+
+
+def archive_path(event_id: str) -> Path:
+    return Path("fixtures") / event_id / "catalog-archive.json"
+
+
+def load_archive(event_id: str) -> dict[str, dict]:
+    """``{sessionId: {"code", "title"}}`` for every session any download has contained."""
+    try:
+        return json.loads(archive_path(event_id).read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def update_archive(event_id: str, sessions: Iterable[Session]) -> int:
+    """Merge sessions into the archive (never removes). Returns how many were new."""
+    archive = load_archive(event_id)
+    before = len(archive)
+    for s in sessions:
+        archive[s.session_id] = {"code": s.code, "title": s.title}
+    path = archive_path(event_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(archive, sort_keys=True))
+    return len(archive) - before

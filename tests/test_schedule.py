@@ -192,3 +192,31 @@ def test_snapshot_is_refreshed_after_a_minute(tmp_path, monkeypatch):
     now = time.time()
     monkeypatch.setattr(sch.time, "time", lambda: now + sch.MAX_AGE_SECONDS + 1)
     assert ms.load().favorites == ["A", "B"] and client.calls == 2
+
+
+def test_withdrawn_favorite_is_named_from_archive_and_grouped(tmp_path):
+    from reinvent_agent.events_api.client import EventsApiError
+
+    class GoneClient(FakeClient):
+        def get_session(self, event_id, sid):
+            raise EventsApiError(404, {"message": "No session was found"}, "GET", "/s")
+
+    ms = MySchedule("ev", lambda: GoneClient([]), {}, path=tmp_path / "s.json")
+    ms.archive = {"OLD": {"code": "AMZ202-R", "title": "Bee wearable"}}
+    d = ms.describe("OLD")
+    assert (d["code"], d["title"], d["withdrawn"]) == ("AMZ202-R", "Bee wearable", True)
+    unknown = ms.describe("NEVER-SEEN")
+    assert unknown["title"] == "(no longer in the AWS catalog)" and unknown["withdrawn"]
+    days = ms.timeline(Schedule(favorites=["OLD"]))
+    assert list(days) == ["withdrawn"] and days["withdrawn"][0]["code"] == "AMZ202-R"
+
+
+def test_archive_keeps_withdrawn_sessions(tmp_path, monkeypatch):
+    from reinvent_agent.catalog import source
+
+    monkeypatch.chdir(tmp_path)
+    old = [Session(sessionId="A", title="Gone", abbreviation="AMZ202-R")]
+    new = [Session(sessionId="B", title="New", abbreviation="SVS350")]
+    assert source.update_archive("ev", old) == 1
+    assert source.update_archive("ev", new) == 1
+    assert source.load_archive("ev")["A"] == {"code": "AMZ202-R", "title": "Gone"}

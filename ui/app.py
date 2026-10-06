@@ -26,6 +26,7 @@ from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
 from reinvent_agent.llm import get_provider
 from reinvent_agent.reservations import API_OPENS, ReservationInfo, release_note
 from reinvent_agent.schedule import MySchedule
+from reinvent_agent.venue_maps import CAMPUS, VENUE_MAPS, map_url
 
 FAV_ICON, RES_ICON, NO_RES_ICON = "⭐", "🎟️", "🚫"
 
@@ -485,6 +486,10 @@ def session_dialog(s, venue_of, is_fav: bool, signed_in: bool) -> None:
         f"**{s.type or 'Session'}** · Level {s.level or '—'}  \n{when}  \n"
         f"📍 {place(venue_of(s), s.room) or '—'}" + (f"  \nRoom: {s.room}" if s.room else "")
     )
+    if links := VENUE_MAPS.get(venue_of(s) or ""):
+        cols = st.columns(len(links[:2]))
+        for col, (label, url) in zip(cols, links[:2], strict=False):
+            col.link_button(f"🗺️ {label}", url, use_container_width=True)
     st.write(s.abstract or "_No abstract._")
     details = {
         "Speakers": ", ".join(s.speaker_names),
@@ -564,7 +569,7 @@ def search_tab(signed_in: bool):
         key = (q, filters.key(), group)
         results = [session_row(s, venue_of) for s in sessions]
         cols = ("code", "title", "type", "level", "weekday", "day", "start", "end", "venue",
-                "sub_venue")  # fmt: skip
+                "sub_venue", "map")  # fmt: skip
         rows = [
             {
                 **({group.lower(): fx.GROUPS[group](s, venue_of)} if group else {}),
@@ -590,6 +595,7 @@ def session_row(s: Session, venue_of) -> dict:
         "end": s.end.strftime("%H:%M") if s.end else None,
         "venue": venue_of(s),
         "sub_venue": sub_venue(s.room),
+        "map": map_url(venue_of(s)),
     }
 
 
@@ -754,6 +760,9 @@ SELECTED_ROW = "background-color: rgba(42, 120, 214, 0.18)"  # blue step 450, ti
 def icon_columns() -> dict:
     return {
         "sub_venue": st.column_config.TextColumn("sub-venue"),
+        "map": st.column_config.LinkColumn(
+            "map", display_text="🗺️", width=50, help="Venue map / floor plans"
+        ),
         "fav": st.column_config.TextColumn(FAV_ICON, width=40, help="Favorited"),
         "res": st.column_config.TextColumn(
             RES_ICON, width=40, help=f"{RES_ICON} reserved · {NO_RES_ICON} no reserved seating"
@@ -902,7 +911,10 @@ def refresh_catalog(do_index: bool) -> None:
     body = source.to_jsonl(items)
     path = source.local_path(cfg.event_id)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():  # sessions withdrawn since keep their name in the archive
+        source.update_archive(cfg.event_id, source.load_sessions(path))
     path.write_text(body)
+    source.update_archive(cfg.event_id, [Session.model_validate(x) for x in items])
     st.success(f"Downloaded {len(items)} sessions (API totalCount {total}) to `{path}`.")
     if cfg.catalog_bucket:
         st.success(f"Uploaded to `{source.upload(body, cfg.catalog_bucket, cfg.event_id)}`.")
@@ -979,6 +991,7 @@ def schedule_tab(signed_in: bool):
     for day, items in days.items():
         label = (
             "No fixed time" if day == "unscheduled"
+            else "🚫 Withdrawn from the catalog" if day == "withdrawn"
             else date.fromisoformat(day).strftime("%A, %b %-d")
         )  # fmt: skip
         n_res = sum(e["reserved"] for e in items)
@@ -994,16 +1007,47 @@ def schedule_tab(signed_in: bool):
                 "title": e.get("title"),
                 "venue": e.get("venue"),
                 "sub-venue": e.get("sub_venue"),
+                "map": map_url(e.get("venue")),
                 "⚠️ overlaps": ", ".join(e["overlaps"]),
             }
             for e in items
         ]
+        # Blank, not "None", where a value is unknown.
+        rows = [{k: ("" if v is None else v) for k, v in r.items()} for r in rows]
         st.dataframe(
             rows,
             hide_index=True,
             use_container_width=True,
-            column_config={"": st.column_config.TextColumn(width=50)},
+            column_config={
+                "": st.column_config.TextColumn(width=50),
+                "map": st.column_config.LinkColumn("map", display_text="🗺️", width=50),
+            },
         )
+        if day == "withdrawn":
+            withdrawn_notice(items)
+
+
+def withdrawn_notice(items: list[dict]) -> None:
+    """AWS removed these sessions; your favorite/reservation still points at them."""
+    st.caption(
+        "AWS removed these sessions from the catalog (the API now answers “no session "
+        "with this id”), but your favorites or reservations still point at them. Names "
+        "come from earlier catalog downloads."
+    )
+    favs = [e["sessionId"] for e in items if e.get("favorite")]
+    if favs and st.button(f"☆ Remove {len(favs)} withdrawn from favorites"):
+        result = my_schedule().unfavorite(favs)
+        if result.failed:
+            st.error("Not removed: " + "; ".join(f"{k}: {v}" for k, v in result.failed.items()))
+        else:
+            st.rerun()
+    held = [e["sessionId"] for e in items if e.get("reserved")]
+    if held and st.button(f"✖ Release {len(held)} withdrawn reservation(s)"):
+        result = my_schedule().cancel_reservation(held)
+        if result.failed:
+            st.error("Not released: " + "; ".join(f"{k}: {v}" for k, v in result.failed.items()))
+        else:
+            st.rerun()
 
 
 BAR_BLUE = "#2a78d6"  # sequential blue, step 450
@@ -1025,6 +1069,7 @@ def venues_tab(signed_in: bool):
     if signed_in:
         with suppress(Exception):  # schedule unavailable: show the catalog without stars
             favorites = set(sched_.load().favorites)
+    venue_maps_section()
     st.caption(
         "A **track** is the session-code prefix (AIM, SEC, DAT, …): the catalog's own "
         "tracks field is empty. Labels show each track's most distinctive topic."
@@ -1188,6 +1233,21 @@ def venues_tab(signed_in: bool):
             hide_index=True,
             use_container_width=True,
             column_config={"": st.column_config.TextColumn(width=40)},
+        )
+
+
+def venue_maps_section() -> None:
+    """Official campus and conference-centre maps, as links."""
+    with st.expander("🗺️ Maps: re:Invent campus and each venue's conference centre", expanded=True):
+        st.markdown(" · ".join(f"[{label}]({url})" for label, url in CAMPUS))
+        cols = st.columns(len(VENUE_MAPS))
+        for col, (venue, links) in zip(cols, VENUE_MAPS.items(), strict=True):
+            col.markdown(f"**{venue}**" + ("  \n(and Encore)" if venue == "Wynn" else ""))
+            for label, url in links:
+                col.markdown(f"- [{label}]({url})")
+        st.caption(
+            "Venue sites publish floor plans for meeting planners; re:Invent's own maps "
+            "and turn-by-turn wayfinding are in the AWS Events mobile app on site."
         )
 
 

@@ -187,7 +187,10 @@ def catalog_dump(
     body = source.to_jsonl(items)
     out = out or source.local_path(event_id)
     out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists():  # sessions withdrawn since keep their name in the archive
+        source.update_archive(event_id, source.load_sessions(out))
     out.write_text(body)
+    source.update_archive(event_id, source.load_sessions(out))
     typer.echo(f"Wrote {len(items)} sessions to {out} (API totalCount: {total})")
     if total is not None and len(items) != total:
         typer.echo("WARNING: session count differs from totalCount; run `catalog probe`.")

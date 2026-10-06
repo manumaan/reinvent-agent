@@ -66,22 +66,27 @@ class MySchedule:
         self.venue_of = venue_of or (lambda s: s.venue)
         self.path = path or snapshot_path(event_id)
         self._extra: dict[str, Session] = {}  # sessions fetched with GetSession
+        self._withdrawn: set[str] = set()  # GetSession 404: no longer in the catalog
+        self.archive: dict[str, dict] = {}  # sessionId -> {code, title} ever seen
 
     @classmethod
     def with_inferred_venues(
         cls, event_id: str, client_factory, sessions: list[Session], **kwargs
     ) -> MySchedule:
         """Catalog lookup plus the same room-name venue inference used for search."""
+        from reinvent_agent.catalog.source import load_archive
         from reinvent_agent.catalog.venues import VenueInferrer
 
         inferrer = VenueInferrer.learn(sessions)
-        return cls(
+        out = cls(
             event_id,
             client_factory,
             {s.session_id: s for s in sessions},
             venue_of=lambda s: inferrer.infer(s)[0],
             **kwargs,
         )
+        out.archive = load_archive(event_id)
+        return out
 
     # --- snapshot ----------------------------------------------------------
 
@@ -222,7 +227,9 @@ class MySchedule:
             return None
         try:
             s = client.get_session(self.event_id, session_id)
-        except Exception:  # withdrawn session or API error: report as unknown
+        except Exception as e:  # 404: withdrawn from the catalog; else unavailable now
+            if getattr(e, "status", None) == 404:
+                self._withdrawn.add(session_id)
             return None
         self._extra[session_id] = s
         return s
@@ -230,7 +237,15 @@ class MySchedule:
     def describe(self, session_id: str) -> dict:
         s = self.session(session_id)
         if s is None:
-            return {"sessionId": session_id, "title": "(not found in catalog)"}
+            known = self.archive.get(session_id, {})
+            withdrawn = session_id in self._withdrawn
+            return {
+                "sessionId": session_id,
+                "code": known.get("code"),
+                "title": known.get("title")
+                or ("(no longer in the AWS catalog)" if withdrawn else "(details unavailable)"),
+                "withdrawn": withdrawn,
+            }
         return {
             "sessionId": s.session_id,
             "code": s.code,
@@ -281,7 +296,8 @@ class MySchedule:
             }
         days: dict[str, list[dict]] = {}
         for e in entries.values():
-            days.setdefault(e.get("day") or "unscheduled", []).append(e)
+            bucket = "withdrawn" if e.get("withdrawn") else e.get("day") or "unscheduled"
+            days.setdefault(bucket, []).append(e)
         for day, items in days.items():
             items.sort(key=lambda e: (e.get("start") or "99", e.get("code") or ""))
             for e in items:
