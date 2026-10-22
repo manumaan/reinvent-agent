@@ -40,6 +40,13 @@ def _deps():
     stored = tokens.load()
     user = token_subject(stored.access_token) if stored else None
     store = PlanStore(table, user or "me", event_id)
+    try:  # the attendee's own travel estimates, if saved (Setup tab)
+        from reinvent_agent import travel
+
+        if body := store.travel_json():
+            travel.apply(travel.from_json(body))
+    except Exception:
+        pass  # defaults are fine
     return runner, store, stored
 
 

@@ -24,7 +24,7 @@ uv run reinvent-agent auth login
 
 # 3. Download the full catalog from the Events API (ListSessions needs the sign-in).
 #    Writes fixtures/reinvent2026/catalog.jsonl (git-ignored) and copies it to the
-#    catalog bucket at catalog/reinvent2026/catalog.jsonl. The app's Catalog tab does the same.
+#    catalog bucket at catalog/reinvent2026/catalog.jsonl. The app's Setup tab does the same.
 uv run reinvent-agent catalog dump
 uv run reinvent-agent catalog upload path/to/catalog.jsonl   # ...or upload a file you already have
 uv run reinvent-agent catalog report          # field coverage + venue inference

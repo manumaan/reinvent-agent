@@ -303,9 +303,14 @@ class ReservationRunner:
         return False
 
     def _clashes_with_held(self, backup: PlanItem, replacing: PlanItem) -> bool:
+        """Overlaps something you hold, or can't be reached from/to it in time."""
         for sid in self.held:
             other = self.plan.item(sid)
-            if other and other.session_id != replacing.session_id and backup.overlaps(other):
+            if (
+                other
+                and other.session_id != replacing.session_id
+                and (backup.overlaps(other) or backup.too_close(other))
+            ):
                 return True
         return False
 

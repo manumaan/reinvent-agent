@@ -21,8 +21,16 @@ from dataclasses import asdict, dataclass, field
 
 from reinvent_agent.catalog.venues import sub_venue
 from reinvent_agent.events_api.models import Session
+from reinvent_agent.travel import travel_minutes
 
 PRIMARY, BACKUP = "primary", "backup"
+
+
+def _minutes(hhmm: str) -> int:
+    h, m = hhmm.split(":")
+    return int(h) * 60 + int(m)
+
+
 PRIORITIES = {1: "must-have", 2: "want", 3: "nice to have"}
 STRATEGIES = {
     "max_sessions": "Most sessions (any venue)",
@@ -56,6 +64,23 @@ class PlanItem:
             and other.start < self.end
         )
 
+    def too_close(self, other: PlanItem) -> tuple[int, int] | None:
+        """``(gap, travel)`` minutes when the two don't overlap but the gap between them
+        is shorter than the estimated travel time between their venues; else None."""
+        if not (
+            self.day
+            and self.day == other.day
+            and self.start
+            and self.end
+            and other.start
+            and other.end
+        ) or self.overlaps(other):
+            return None  # fmt: skip
+        first, second = sorted((self, other), key=lambda i: i.start)
+        gap = _minutes(second.start) - _minutes(first.end)
+        travel = travel_minutes(first.venue, second.venue)
+        return (gap, travel) if gap < travel else None
+
     def overlap_minutes(self, other: PlanItem) -> int:
         if not self.overlaps(other):
             return 0
@@ -74,6 +99,7 @@ class ReservationPlan:
     event_id: str
     items: list[PlanItem]
     strategy: str = "custom"
+    source: str = "favorites"  # favorites | shortlist | both: what the draft was built from
     version: int = 0
     created_at: float = field(default_factory=time.time)
     approved_at: float | None = None
@@ -123,6 +149,20 @@ class ReservationPlan:
                     out.append(
                         f"{a.code} and {b.code} overlap on {a.day}: make one of them a backup."
                     )
+        return out
+
+    def tight_transfers(self) -> list[tuple[PlanItem, PlanItem, int, int]]:
+        """Consecutive reserve sessions you can't reach in time: (from, to, gap, travel)."""
+        out = []
+        by_day: dict[str, list[PlanItem]] = {}
+        for p in self.items:
+            if p.role == PRIMARY and p.day and p.start:
+                by_day.setdefault(p.day, []).append(p)
+        for items in by_day.values():
+            items.sort(key=lambda p: p.start)
+            for a, b in zip(items, items[1:], strict=False):
+                if hit := a.too_close(b):
+                    out.append((a, b, *hit))
         return out
 
     def orphan_backups(self) -> list[PlanItem]:
@@ -179,7 +219,10 @@ def build_plan(
         for s in timed:
             by_day.setdefault(s.day.isoformat(), []).append(s)
         chosen = {
-            x.session_id for ss in by_day.values() for x in best_non_overlapping(ss, reserved)
+            x.session_id
+            for ss in by_day.values()
+            # any venue: leave time to get from one venue to the next
+            for x in best_non_overlapping(ss, reserved, venue_of=venue_of)
         }
     else:
         raise ValueError(f"strategy must be one of {sorted(STRATEGIES)}")
@@ -247,6 +290,16 @@ class PlanStore:
 
     def save_profile_json(self, body: str) -> None:
         self._put(f"profile#{self.event_id}", body)
+
+    def travel_json(self) -> str | None:
+        """Travel-time estimates edited on the Setup tab (see ``reinvent_agent.travel``)."""
+        return self._get(f"travel#{self.event_id}")
+
+    def save_travel_json(self, body: str) -> None:
+        self._put(f"travel#{self.event_id}", body)
+
+    def clear_travel(self) -> None:
+        self.table.delete_item(Key=self._key(f"travel#{self.event_id}"))
 
     def flag(self, name: str) -> float | None:
         """Epoch seconds a flag was set (e.g. "api-run-done", "alert"), or None."""

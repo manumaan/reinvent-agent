@@ -44,6 +44,32 @@ cfg = settings()
 store = accounts.token_store(cfg)  # shared with the cloud run once unattended is on
 
 
+def travel_path():
+    from pathlib import Path
+
+    from reinvent_agent.profile import profile_path
+
+    return Path(profile_path(cfg.event_id)).with_name(f"travel-{cfg.event_id}.json")
+
+
+def load_travel() -> None:
+    """Use the attendee's saved travel estimates (cloud copy first, then local)."""
+    from reinvent_agent import travel
+
+    body = None
+    with suppress(Exception):
+        if pstore := accounts.plan_store(cfg):
+            body = pstore.travel_json()
+    if not body and travel_path().exists():
+        body = travel_path().read_text()
+    travel.apply(travel.from_json(body) if body else None)
+
+
+if "travel_loaded" not in st.session_state:
+    st.session_state["travel_loaded"] = True
+    load_travel()
+
+
 # --- sign-in ------------------------------------------------------------------
 
 
@@ -291,7 +317,7 @@ def profile_tab(signed_in: bool):
 
     catalog = local_catalog()
     if not catalog:
-        return st.info("Download the catalog first (Catalog tab): the choices come from it.")
+        return st.info("Download the catalog first (Setup tab): the choices come from it.")
     sessions = list(catalog.values())
     venue_of = my_schedule().venue_of
     prof = current_profile()
@@ -409,7 +435,7 @@ def shortlist_tab(signed_in: bool):
     catalog = local_catalog()
     prof = current_profile()
     if not catalog:
-        return st.info("Download the catalog first (Catalog tab).")
+        return st.info("Download the catalog first (Setup tab).")
     if not prof.answered():
         return st.info("Fill in your profile on the 👤 Profile tab first.")
     venue_of = my_schedule().venue_of
@@ -588,7 +614,7 @@ def search_tab(signed_in: bool):
 
     catalog = local_catalog()
     if not catalog:
-        return st.info("No catalog yet: download it from the Catalog tab.")
+        return st.info("No catalog yet: download it from the Setup tab.")
     sched = None
     if signed_in:
         try:
@@ -602,7 +628,7 @@ def search_tab(signed_in: bool):
         st.warning(
             f"{len(missing)} of your favorites/reservations aren't in your downloaded "
             "catalog (sessions added since you downloaded it), so they can't show here. "
-            "Re-download it on the Catalog tab."
+            "Re-download it on the Setup tab."
         )
 
     left, right = st.columns([1, 3], gap="medium")
@@ -677,7 +703,7 @@ def seat_bar(catalog) -> None:
             f"🎟️ Seats checked {time.strftime('%H:%M', time.localtime(check.checked_at))}: "
             f"{open_seats} sessions with seats · {counts.get('unavailable', 0)} full"
             + (f" · {new} new sessions not in your catalog yet (re-download on the "
-               "Catalog tab)" if new else "")
+               "Setup tab)" if new else "")
         )  # fmt: skip
     else:
         c1.caption("🎟️ Seats not checked yet.")
@@ -1062,6 +1088,70 @@ def refresh_catalog(do_index: bool) -> None:
     bar.empty()
 
 
+def setup_tab(signed_in: bool):
+    st.subheader("📚 Session catalog")
+    catalog_tab(signed_in)
+    st.divider()
+    travel_section()
+
+
+def travel_section() -> None:
+    """Editable travel-time estimates between venues (used by plans and the runner)."""
+    from reinvent_agent import travel
+
+    st.subheader("🚶 Travel time between venues")
+    st.caption(
+        "Door-to-door minutes, including the indoor walks out of one conference area and "
+        "into the next. The defaults are estimates; change any number, then Save. Used by "
+        'plans ("Most sessions" leaves this much time between venues), tight-transfer '
+        "warnings, and the cloud reservation run's backups. Rebuild a draft to apply."
+    )
+    for kind, text in st.session_state.pop("travel_flash", []):
+        getattr(st, kind)(text)
+    edited = st.data_editor(
+        travel.rows(),
+        key=f"travel_editor_{st.session_state.get('travel_nonce', 0)}",
+        hide_index=True,
+        use_container_width=True,
+        disabled=["from", "to", "default"],
+        column_config={
+            "from": st.column_config.TextColumn("from"),
+            "to": st.column_config.TextColumn("to"),
+            "minutes": st.column_config.NumberColumn(
+                "minutes", min_value=0, max_value=180, step=5, required=True
+            ),
+            "default": st.column_config.NumberColumn("default (estimate)"),
+        },
+    )
+    settings = travel.from_rows(edited)
+    changed = settings != travel.current()
+    b1, b2, _ = st.columns([1, 1, 2])
+    if b1.button("Save travel times", type="primary", disabled=not changed,
+                 use_container_width=True):  # fmt: skip
+        travel.apply(settings)
+        body = travel.to_json(settings)
+        travel_path().parent.mkdir(parents=True, exist_ok=True)
+        travel_path().write_text(body)
+        where = "on this computer"
+        with suppress(Exception):
+            if pstore := accounts.plan_store(cfg):
+                pstore.save_travel_json(body)
+                where = "on this computer and in your AWS account (used by the cloud run)"
+        st.session_state["travel_flash"] = [("success", f"Saved travel times {where}.")]
+        st.session_state["travel_nonce"] = st.session_state.get("travel_nonce", 0) + 1
+        st.rerun()
+    if b2.button("Reset to defaults", use_container_width=True,
+                 disabled=travel.current() == travel.DEFAULTS):  # fmt: skip
+        travel.apply(None)
+        travel_path().unlink(missing_ok=True)
+        with suppress(Exception):
+            if pstore := accounts.plan_store(cfg):
+                pstore.clear_travel()
+        st.session_state["travel_flash"] = [("success", "Reset travel times to the defaults.")]
+        st.session_state["travel_nonce"] = st.session_state.get("travel_nonce", 0) + 1
+        st.rerun()
+
+
 def catalog_tab(signed_in: bool):
     catalog = local_catalog()
     where = source.resolve(None, cfg.event_id, cfg.catalog_bucket)
@@ -1198,7 +1288,7 @@ def venues_tab(signed_in: bool):
 
     catalog = local_catalog()
     if not catalog:
-        return st.info("No catalog yet: download it from the Catalog tab.")
+        return st.info("No catalog yet: download it from the Setup tab.")
     sched_ = my_schedule()
     favorites: set[str] = set()
     if signed_in:
@@ -1440,8 +1530,6 @@ def plans_tab(signed_in: bool):
                         hide_index=True,
                         use_container_width=True,
                     )  # fmt: skip
-    with st.expander("One venue per day (suggestion only)"):
-        venue_plan(sched_, sched)
 
 
 def flash() -> None:
@@ -1470,22 +1558,68 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
         "are tried, in order, when an overlapping session is full or can't be reserved. "
         "**Priority** sets the order: seats go to whoever asks first."
     )
-    c1, c2 = st.columns([3, 1])
     draft = pstore.draft()
-    options = list(STRATEGIES)
-    current = options.index(draft.strategy) if draft and draft.strategy in options else 0
-    strategy = c1.radio(
-        "Start from", options, index=current, format_func=STRATEGIES.get, horizontal=True
-    )
-    # Switching the strategy rebuilds the draft from favorites (edits are replaced).
-    rebuild = c2.button("Rebuild from favorites", use_container_width=True)
-    if rebuild or draft is None or draft.strategy != strategy:
-        ids = list(dict.fromkeys(sched.reserved + sched.favorites))
-        draft = build_plan(
-            cfg.event_id, sched_.sessions(ids), sched_.venue_of, sched.reserved, strategy
+    shortlist = st.session_state.get("shortlist_ids", set())
+    pools = {
+        "favorites": list(dict.fromkeys(sched.reserved + sched.favorites)),
+        "shortlist": list(dict.fromkeys(sched.reserved + sorted(shortlist))),
+        "both": list(dict.fromkeys(sched.reserved + sched.favorites + sorted(shortlist))),
+    }
+    sources = {"favorites": "your favorites", "shortlist": "your short list",
+               "both": "your favorites + short list"}  # fmt: skip
+
+    def rebuild(source: str, strategy: str):
+        plan = build_plan(
+            cfg.event_id,
+            sched_.sessions(pools[source]),
+            sched_.venue_of,
+            sched.reserved,
+            strategy,
         )
-        pstore.save_draft(draft)
+        plan.source = source
+        pstore.save_draft(plan)
         st.session_state.pop("plan_editor", None)
+        return plan
+
+    # A button click sets the strategy radio too, so apply it before the radio is drawn.
+    if pending := st.session_state.pop("plan_rebuild", None):
+        st.session_state["plan_strategy"] = pending[1]
+        draft = rebuild(*pending)
+    options = list(STRATEGIES)
+    if "plan_strategy" not in st.session_state:
+        st.session_state["plan_strategy"] = (
+            draft.strategy if draft and draft.strategy in options else options[0]
+        )
+    strategy = st.radio(
+        "Start from", options, key="plan_strategy", format_func=STRATEGIES.get, horizontal=True
+    )
+    b1, b2, b3 = st.columns(3)
+    if b1.button("Rebuild from favorites", use_container_width=True):
+        st.session_state["plan_rebuild"] = ("favorites", strategy)
+        st.rerun()
+    if b2.button(
+        "Rebuild from short list",
+        use_container_width=True,
+        disabled=not shortlist,
+        help=None if shortlist else "Your short list is empty: fill in the 👤 Profile tab.",
+    ):
+        st.session_state["plan_rebuild"] = ("shortlist", strategy)
+        st.rerun()
+    if b3.button(
+        "Suggest me (one venue per day)",
+        type="primary",
+        use_container_width=True,
+        help="One venue each day, chosen from your favorites and short list.",
+    ):
+        st.session_state["plan_rebuild"] = ("both", "one_venue")
+        st.rerun()
+    # Switching the strategy rebuilds from the same sessions (edits are replaced).
+    if draft is None or draft.strategy != strategy:
+        draft = rebuild(draft.source if draft else "favorites", strategy)
+    st.caption(
+        f"Draft built from {sources.get(draft.source, draft.source)} "
+        f"· {STRATEGIES.get(draft.strategy, draft.strategy).lower()}."
+    )
 
     rows = [
         {
@@ -1526,12 +1660,20 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
             continue
         item.role, item.priority = role, by_prio[row["priority"]]
         items.append(item)
-    plan = ReservationPlan(event_id=cfg.event_id, items=items, strategy=draft.strategy)
+    plan = ReservationPlan(
+        event_id=cfg.event_id, items=items, strategy=draft.strategy, source=draft.source
+    )
     plan.link_backups()
 
     problems = plan.problems()
     for p in problems:
         st.error(p)
+    for a, b, gap, travel in plan.tight_transfers():
+        st.warning(
+            f"🚶 Tight transfer on {a.day}: {a.code} ({a.venue}, ends {a.end}) → {b.code} "
+            f"({b.venue}, starts {b.start}): {gap} min gap, ~{travel} min to get there "
+            "(estimate). Make one of them a backup, or keep both if you're fine arriving late."
+        )
     orphans = plan.orphan_backups()
     if orphans:
         st.warning(
@@ -1720,33 +1862,20 @@ def unattended_section(approved) -> None:
         set_flash(("info", report.text()))
 
 
-def venue_plan(sched_: MySchedule, sched) -> None:
-    from reinvent_agent.planner import plan_one_venue_per_day
-
-    ids = list(dict.fromkeys(sched.favorites + sched.reserved))
-    plan = plan_one_venue_per_day(sched_.sessions(ids), sched_.venue_of, sched.reserved)
-    st.write(plan.summary)
-    for d in plan.days:
-        left = "" if d.all_fit else f", {len(d.not_scheduled)} left out"
-        st.markdown(f"**{d.weekday} {d.day} · {d.venue}** ({len(d.sessions)} sessions{left})")
-        timeline = [
-            {"start": x.start, "end": x.end, "session": f"{x.code} {x.title}"} for x in d.sessions
-        ] + [{"start": g.start, "end": g.end, "session": "— free —"} for g in d.free_slots]
-        st.dataframe(sorted(timeline, key=lambda r: r["start"]), hide_index=True)
-        if d.not_scheduled:
-            st.caption(
-                "Left out: "
-                + "; ".join(f"{x['code']} ({x['venue']}, {x['reason']})" for x in d.not_scheduled)
-            )
-    if plan.unplaceable:
-        st.caption("Not plannable: " + ", ".join(x["code"] for x in plan.unplaceable))
-
-
 signed_in = sidebar()
 model_caption()
 st.title("re:Invent 2026 planner")
-tab_prof, tab_short, tab_ask, tab_search, tab_sched, tab_plans, tab_venues, tab_cat = st.tabs(
-    ["👤 Profile", "⭐ Short list", "Ask", "Search", "My schedule", "Plans", "Venues", "Catalog"]
+tab_prof, tab_short, tab_ask, tab_search, tab_plans, tab_sched, tab_venues, tab_cat = st.tabs(
+    [
+        "👤 Profile",
+        "⭐ Short list",
+        "Ask",
+        "Search",
+        "Plans",
+        "My schedule",
+        "Venues",
+        "Setup",
+    ]
 )
 with tab_prof:
     profile_tab(signed_in)
@@ -1763,4 +1892,4 @@ with tab_plans:
 with tab_venues:
     venues_tab(signed_in)
 with tab_cat:
-    catalog_tab(signed_in)
+    setup_tab(signed_in)

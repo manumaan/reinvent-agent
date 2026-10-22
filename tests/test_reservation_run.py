@@ -397,3 +397,24 @@ def test_backups_prefer_the_same_venue():
     near = item("NEAR", "10:30", "11:00", BACKUP)  # less overlap, but same venue
     plan = make_plan(item("P", "10:00", "11:00"), other, near)
     assert [b.code for b in plan.backups_for("P")] == ["NEAR", "FAR"]
+
+
+def test_tight_transfers_are_flagged_and_backups_must_be_reachable():
+    mgm = item("MGM", "13:30", "14:30")
+    mgm.venue = "MGM Grand"
+    wynn = item("WYNN", "14:45", "15:45")
+    wynn.venue = "Wynn"
+    plan = make_plan(mgm, wynn)
+    [(a, b, gap, travel)] = plan.tight_transfers()
+    assert (a.code, b.code, gap, travel) == ("MGM", "WYNN", 15, 40)
+
+    clock = Clock()
+    api = FakeApi(clock, full={"P"})
+    held = item("HELD", "13:30", "14:30", priority=1)
+    held.venue = "MGM Grand"
+    far_backup = item("FAR", "14:30", "15:30", BACKUP)
+    far_backup.venue = "Wynn"  # free in time, but ~40 min away from HELD
+    p = item("P", "14:30", "15:30")
+    p.venue = "MGM Grand"
+    report = runner_for(api, clock)[0].run(make_plan(held, p, far_backup), "x", clock.t)
+    assert "FAR" not in api.held and report.failed[0]["code"] == "P"

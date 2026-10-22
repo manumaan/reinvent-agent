@@ -27,10 +27,10 @@ def test_renders_signed_out_without_deployment(app):
         "⭐ Short list",
         "Ask",
         "Search",
-        "My schedule",
         "Plans",
+        "My schedule",
         "Venues",
-        "Catalog",
+        "Setup",
     ]
     assert any(b.label == "Sign in with AWS Builder ID" for b in at.sidebar.button)
     assert any("isn't deployed yet" in w.value for w in at.warning)

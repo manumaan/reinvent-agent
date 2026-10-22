@@ -71,3 +71,55 @@ def test_unplaceable_sessions_are_reported():
         "T": "no fixed time",
         "V": "venue unknown",
     }
+
+
+def test_any_venue_plan_leaves_travel_time_between_venues():
+    sessions = [
+        s("MGM1", D1, "13:30", 60, "MGM Grand"),  # ends 14:30
+        s("WYNN", D1, "14:30", 60, "Wynn"),  # 0 min after, ~40 min away
+        s("MGM2", D1, "14:30", 60, "MGM Grand"),  # same venue, back to back is fine
+    ]
+    no_travel = best_non_overlapping(sessions[:2], set())
+    assert [x.code for x in no_travel] == ["MGM1", "WYNN"]  # the old behaviour
+    with_travel = best_non_overlapping(sessions, set(), venue_of=venue)
+    assert [x.code for x in with_travel] == ["MGM1", "MGM2"]
+    far = [s("A", D1, "09:00", 60, "MGM Grand"), s("B", D1, "10:45", 60, "Wynn")]  # 45 min gap
+    assert len(best_non_overlapping(far, set(), venue_of=venue)) == 2
+
+
+def test_travel_estimates_are_symmetric_with_safe_defaults():
+    from reinvent_agent.travel import UNKNOWN, travel_minutes
+
+    assert travel_minutes("Wynn", "MGM Grand") == travel_minutes("MGM Grand", "Wynn") == 40
+    assert travel_minutes("Venetian", "Venetian") == 0
+    assert travel_minutes("Venetian", None) == UNKNOWN
+
+
+def test_edited_travel_times_roundtrip_and_apply():
+    from reinvent_agent import travel
+
+    try:
+        rows = travel.rows()
+        assert rows[-2]["from"] == "(same venue)" and rows[-1]["from"] == "(unknown venue)"
+        for r in rows:
+            if {r["from"], r["to"]} == {"Wynn", "MGM Grand"}:
+                r["minutes"] = 50
+            if r["from"] == "(same venue)":
+                r["minutes"] = 5
+        settings = travel.from_json(travel.to_json(travel.from_rows(rows)))
+        travel.apply(settings)
+        assert travel.travel_minutes("MGM Grand", "Wynn") == 50  # both directions
+        assert travel.travel_minutes("Venetian", "Venetian") == 5
+        assert travel.current() == settings != travel.DEFAULTS
+    finally:
+        travel.apply(None)
+    assert travel.travel_minutes("Wynn", "MGM Grand") == 40
+
+
+def test_travel_table_is_sorted_from_then_to():
+    from reinvent_agent import travel
+
+    pairs = [(r["from"], r["to"]) for r in travel.rows()[:-2]]
+    assert pairs == sorted(pairs, key=lambda p: (p[0].lower(), p[1].lower()))
+    assert all(a < b for a, b in pairs)  # each pair once, alphabetical within it
+    assert pairs[0] == ("Caesars Forum", "Caesars Palace")

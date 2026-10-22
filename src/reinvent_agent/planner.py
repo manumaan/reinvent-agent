@@ -82,12 +82,22 @@ def _slot(s: Session, venue: str | None, reserved: set[str]) -> Slot:
 
 
 def best_non_overlapping(
-    sessions: list[Session], reserved: set[str], buffer_minutes: int = 0
+    sessions: list[Session],
+    reserved: set[str],
+    buffer_minutes: int = 0,
+    venue_of: Callable[[Session], str | None] | None = None,
 ) -> list[Session]:
     """Weighted interval scheduling. Score, compared lexicographically:
-    (reserved sessions kept, sessions kept, minutes in sessions)."""
+    (reserved sessions kept, sessions kept, minutes in sessions).
+
+    Consecutive sessions need ``end + gap <= next start``, where the gap is
+    ``buffer_minutes`` plus, when ``venue_of`` is given, the estimated travel time
+    between their venues (``travel.travel_minutes``). The gap depends on the pair, so
+    this is the O(n²) form: best chain ending at each session.
+    """
+    from reinvent_agent.travel import travel_minutes
+
     items = sorted(sessions, key=lambda s: (s.end, s.start))
-    n = len(items)
 
     def weight(s: Session) -> tuple[int, int, int]:
         return (int(s.session_id in reserved), 1, int(s.duration.total_seconds() // 60))
@@ -95,28 +105,28 @@ def best_non_overlapping(
     def add(a, b):
         return tuple(x + y for x, y in zip(a, b, strict=True))
 
-    # prev[i]: number of items (prefix length) that end before items[i] starts.
-    prev = []
+    def gap_ok(a: Session, b: Session) -> bool:
+        gap = buffer_minutes
+        if venue_of is not None:
+            gap += travel_minutes(venue_of(a), venue_of(b))
+        return a.end.timestamp() + gap * 60 <= b.start.timestamp()
+
+    best: list[tuple[int, int, int]] = []  # best chain ending with items[i]
+    pred: list[int | None] = []
     for i, s in enumerate(items):
-        j = i
-        while j > 0 and (items[j - 1].end.timestamp() + buffer_minutes * 60 > s.start.timestamp()):
-            j -= 1
-        prev.append(j)
-    best: list[tuple[int, int, int]] = [(0, 0, 0)] * (n + 1)
-    take: list[bool] = [False] * (n + 1)
-    for i in range(1, n + 1):
-        with_i = add(best[prev[i - 1]], weight(items[i - 1]))
-        if with_i > best[i - 1]:
-            best[i], take[i] = with_i, True
-        else:
-            best[i] = best[i - 1]
-    chosen, i = [], n
-    while i > 0:
-        if take[i]:
-            chosen.append(items[i - 1])
-            i = prev[i - 1]
-        else:
-            i -= 1
+        top, via = (0, 0, 0), None
+        for j in range(i):
+            if best[j] > top and gap_ok(items[j], s):
+                top, via = best[j], j
+        best.append(add(top, weight(s)))
+        pred.append(via)
+    if not items:
+        return []
+    i = max(range(len(items)), key=lambda k: best[k])
+    chosen = []
+    while i is not None:
+        chosen.append(items[i])
+        i = pred[i]
     return sorted(chosen, key=lambda s: s.start)
 
 
