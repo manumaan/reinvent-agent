@@ -1066,7 +1066,7 @@ def refresh_catalog(do_index: bool) -> None:
         st.success(f"Uploaded to `{source.upload(body, cfg.catalog_bucket, cfg.event_id)}`.")
     local_catalog.clear()
     catalog_docs.clear()
-    reservation_info.clear()
+    _reservation_info.clear()
     my_schedule.clear()
     qa_backend.clear()
     if do_index and cfg.vector_bucket:

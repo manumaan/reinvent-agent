@@ -45,3 +45,20 @@ def test_pending_sign_in_shows_link_then_clears(app):
     at = at.run()
     assert not at.exception
     assert not at.sidebar.info
+
+
+def test_every_cleared_cache_is_a_cached_function():
+    """`x.clear()` only exists on @st.cache_* functions (a refactor once broke this)."""
+    import ast
+    import re
+    from pathlib import Path
+
+    src = (Path(__file__).parent.parent / "ui" / "app.py").read_text()
+    cached = {
+        f.name
+        for f in ast.parse(src).body
+        if isinstance(f, ast.FunctionDef)
+        and any("cache" in ast.unparse(d) for d in f.decorator_list)
+    }
+    cleared = set(re.findall(r"\b(\w+)\.clear\(\)", src)) - {"store"}  # store: tokens
+    assert cleared <= cached, cleared - cached
