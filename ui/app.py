@@ -24,7 +24,16 @@ from reinvent_agent.config import settings
 from reinvent_agent.events_api import EventsApiClient, Session
 from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
 from reinvent_agent.llm import get_provider
-from reinvent_agent.reservations import API_OPENS, ReservationInfo, release_note
+from reinvent_agent.reservations import (
+    API_OPENS,
+    FULL,
+    HAS_SEATS,
+    NOT_RESERVABLE,
+    SEAT_BANDS,
+    WALK_UP,
+    ReservationInfo,
+    release_note,
+)
 from reinvent_agent.schedule import MySchedule
 from reinvent_agent.venue_maps import CAMPUS, VENUE_MAPS, map_url
 
@@ -95,7 +104,11 @@ def sidebar() -> bool:
     just_signed_in = login["status"] == "done"
     login["status"] = "idle"
     st.sidebar.success("Signed in")
-    schedule_status(refresh=just_signed_in)
+    # Fetch fresh from AWS on sign-in and whenever the page is (re)opened, so changes
+    # made in the AWS portal (e.g. reservations) show at once, not after the cache age.
+    new_visit = "schedule_synced" not in st.session_state
+    st.session_state["schedule_synced"] = True
+    schedule_status(refresh=just_signed_in or new_visit)
     st.sidebar.caption(
         "Unattended reservations: "
         + ("**on**" if accounts.unattended_enabled() else "off")
@@ -178,9 +191,36 @@ def catalog_docs():
     return build_documents(list(local_catalog().values()), cfg.event_id)
 
 
-@st.cache_resource
 def reservation_info() -> ReservationInfo:
-    return ReservationInfo(local_catalog().values())
+    """Live seat data (when checked) over the catalog snapshot."""
+    check = seat_check()
+    return _reservation_info(check.checked_at if check else 0.0)
+
+
+@st.cache_resource
+def _reservation_info(checked_at: float) -> ReservationInfo:
+    check = seat_check()
+    return ReservationInfo(local_catalog().values(), check.sessions if check else None)
+
+
+def seat_check():
+    from reinvent_agent.seats import load_seats
+
+    return load_seats(cfg.event_id)
+
+
+def run_seat_check() -> None:
+    from reinvent_agent.seats import check_seats
+
+    client = accounts.events_client(cfg)
+    if client is None:
+        return
+    with st.spinner("Checking live seat availability…"):
+        check_seats(client, cfg.event_id)
+
+
+def seats_label(session_id: str) -> str:
+    return SEAT_BANDS.get(reservation_info().seats(session_id) or "", "—")
 
 
 @st.cache_data
@@ -374,9 +414,11 @@ def shortlist_tab(signed_in: bool):
         return st.info("Fill in your profile on the 👤 Profile tab first.")
     venue_of = my_schedule().venue_of
     favorites: set[str] = set()
+    reserved: set[str] = set()
     if signed_in:
         with suppress(Exception):
-            favorites = set(my_schedule().load().favorites)
+            sched_now = my_schedule().load()
+            favorites, reserved = set(sched_now.favorites), set(sched_now.reserved)
 
     # Free-text answers -> semantic search (cached per profile).
     key = prof.to_json()
@@ -400,7 +442,7 @@ def shortlist_tab(signed_in: bool):
 
     c1, c2, c3 = st.columns([2, 2, 2])
     limit = c1.slider("How many", 6, 60, 24, step=6)
-    order = c2.radio("Sort", ["Best match", "Day & time"], horizontal=True)
+    order = c2.radio("Sort", ["Best match", "Day & time", "Seats first"], horizontal=True)
     refined = st.session_state.get("shortlist_refined")
     if refined and refined[0] != (key, limit):
         refined = None
@@ -438,30 +480,69 @@ def shortlist_tab(signed_in: bool):
         from reinvent_agent.shortlist import s_key
 
         shown = sorted(shown, key=lambda p: s_key(p.session))
+    elif order == "Seats first":
+        rank = {"available": 0, "limited": 1, "veryLimited": 2}
+        info = reservation_info()
+        shown = sorted(shown, key=lambda p: rank.get(info.seats(p.session.session_id) or "", 9))
+    if flash := st.session_state.pop("card_flash", None):
+        getattr(st, flash[0])(flash[1])
 
     cols = st.columns(3)
     for i, p in enumerate(shown):
         with cols[i % 3]:
-            session_card(p, venue_of, p.session.session_id in favorites, signed_in)
+            session_card(p, venue_of, p.session.session_id in favorites, signed_in, reserved)
 
 
-def session_card(p, venue_of, is_fav: bool, signed_in: bool) -> None:
+def session_card(p, venue_of, is_fav: bool, signed_in: bool, reserved=frozenset()) -> None:
     s = p.session
+    is_res = s.session_id in reserved
     with st.container(border=True):
-        st.markdown(f"**{s.code}** {FAV_ICON if is_fav else ''}  \n**{s.title}**")
+        st.markdown(
+            f"**{s.code}** {FAV_ICON if is_fav else ''}{RES_ICON if is_res else ''}"
+            f"  \n**{s.title}**"
+        )
         when = (
             f"{s.day:%a %b %-d} · {s.start:%H:%M}–{s.end:%H:%M}" if s.start and s.end
             else "No fixed time"
         )  # fmt: skip
         st.caption(
             f"{s.type or 'Session'} · L{s.level_number or '—'}  \n{when}  \n"
-            f"📍 {place(venue_of(s), s.room) or '—'}"
+            f"📍 {place(venue_of(s), s.room) or '—'}  \n"
+            f"Seats: {'🎟️ reserved' if is_res else seats_label(s.session_id)}"
         )
-        b1, b2 = st.columns(2)
+        b1, b2, b3 = st.columns(3)
         if b1.button("Details", key=f"card_{s.session_id}", use_container_width=True):
-            session_dialog(s, venue_of, is_fav, signed_in)
+            session_dialog(s, venue_of, is_fav, signed_in, is_res)
         if signed_in:
             fav_button(b2, s, is_fav, key=f"cardfav_{s.session_id}")
+            reserve_button(b3, s, is_res, key=f"cardres_{s.session_id}")
+
+
+def reserve_button(where, s, is_res: bool, key: str) -> None:
+    """Reserve / release one session; the result is checked against GetSchedule."""
+    if is_res:
+        label, fn = "✖ Unreserve", my_schedule().cancel_reservation
+    else:
+        if not reservation_info().can_reserve(s.session_id):
+            where.button("🎟️ Reserve", key=key, disabled=True, use_container_width=True,
+                         help=f"Not reservable now: {seats_label(s.session_id)}")  # fmt: skip
+            return
+        label, fn = f"{RES_ICON} Reserve", reserve_in_viewer_tz
+    if where.button(label, key=key, use_container_width=True):
+        try:
+            result = fn([s.session_id])
+        except Exception as e:
+            st.session_state["card_flash"] = ("error", f"{s.code}: {e}")
+        else:
+            if result.done:
+                st.session_state["card_flash"] = (
+                    "success",
+                    f"{result.action.capitalize()}: {s.code}",
+                )
+            else:
+                why = result.note or "; ".join(result.failed.values())
+                st.session_state["card_flash"] = ("warning", f"{s.code} not done: {why}")
+        st.rerun()
 
 
 def fav_button(where, s, is_fav: bool, key: str) -> None:
@@ -476,7 +557,7 @@ def fav_button(where, s, is_fav: bool, key: str) -> None:
 
 
 @st.dialog("Session details", width="large")
-def session_dialog(s, venue_of, is_fav: bool, signed_in: bool) -> None:
+def session_dialog(s, venue_of, is_fav: bool, signed_in: bool, is_res: bool = False) -> None:
     st.markdown(f"### {s.code} · {s.title}")
     when = (
         f"{s.day:%A, %b %-d} · {s.start:%H:%M}–{s.end:%H:%M}" if s.start and s.end
@@ -501,8 +582,11 @@ def session_dialog(s, venue_of, is_fav: bool, signed_in: bool) -> None:
         "Format": ", ".join(s.features),
     }
     st.markdown("\n".join(f"**{k}:** {v}  " for k, v in details.items() if v))
+    st.markdown(f"**Seats:** {'🎟️ reserved' if is_res else seats_label(s.session_id)}")
     if signed_in:
-        fav_button(st, s, is_fav, key=f"dlgfav_{s.session_id}")
+        d1, d2 = st.columns(2)
+        fav_button(d1, s, is_fav, key=f"dlgfav_{s.session_id}")
+        reserve_button(d2, s, is_res, key=f"dlgres_{s.session_id}")
 
 
 def search_tab(signed_in: bool):
@@ -532,6 +616,8 @@ def search_tab(signed_in: bool):
     with left:
         filters, group = filter_panel(catalog, venue_of, favorites, reserved, signed_in)
     with right:
+        if signed_in:
+            seat_bar(catalog)
         q = st.text_input(
             "Search sessions",
             placeholder="serverless event-driven architecture (leave empty to browse all)",
@@ -547,7 +633,7 @@ def search_tab(signed_in: bool):
                 cached = (q, [h.session_id for h in hits])
                 st.session_state["search_results"] = cached
             ranked = [catalog[i] for i in cached[1] if i in catalog]
-            sessions = fx.apply(ranked, filters, venue_of)
+            sessions = seat_filter(fx.apply(ranked, filters, venue_of), reserved, catalog)
             st.caption(
                 f"{len(sessions)} of the 100 best matches for “{q}”"
                 + (f" pass {filters.active} filter(s)." if filters.active else ".")
@@ -556,7 +642,7 @@ def search_tab(signed_in: bool):
             ordered = sorted(
                 catalog.values(), key=lambda s: (s.start is None, s.start or 0, s.code)
             )
-            sessions = fx.apply(ordered, filters, venue_of)
+            sessions = seat_filter(fx.apply(ordered, filters, venue_of), reserved, catalog)
             st.caption(f"{len(sessions)} of {len(catalog)} sessions.")
         if group:
             by = fx.GROUPS[group]
@@ -575,11 +661,59 @@ def search_tab(signed_in: bool):
                 **({group.lower(): fx.GROUPS[group](s, venue_of)} if group else {}),
                 "fav": FAV_ICON if r["sessionId"] in favorites else "",
                 "res": reservation_icon(r["sessionId"], reserved),
+                "seats": seats_label(r["sessionId"]),
                 **{c: r.get(c) for c in cols},
             }
             for s, r in zip(sessions, results, strict=True)
         ]
         results_table(rows, results, key, favorites, reserved, signed_in)
+
+
+def seat_bar(catalog) -> None:
+    """When seats were last checked, and a button to check again."""
+    if "seats_checked_this_visit" not in st.session_state:
+        st.session_state["seats_checked_this_visit"] = True
+        run_seat_check()  # once per visit: seats change by the minute
+    check = seat_check()
+    c1, c2 = st.columns([4, 1])
+    if check:
+        counts = check.counts()
+        open_seats = sum(counts.get(b, 0) for b in HAS_SEATS)
+        new = len(set(check.sessions) - set(catalog))
+        c1.caption(
+            f"🎟️ Seats checked {time.strftime('%H:%M', time.localtime(check.checked_at))}: "
+            f"{open_seats} sessions with seats · {counts.get('unavailable', 0)} full"
+            + (f" · {new} new sessions not in your catalog yet (re-download on the "
+               "Catalog tab)" if new else "")
+        )  # fmt: skip
+    else:
+        c1.caption("🎟️ Seats not checked yet.")
+    if c2.button("🔄 Check seats", use_container_width=True):
+        run_seat_check()
+        reset_table()
+
+
+def seat_filter(sessions, reserved: set[str], catalog) -> list:
+    """The Seats section of the filter panel: has seats / fits my reservations."""
+    state = st.session_state
+    if state.get("fx_hasseats"):
+        info = reservation_info()
+        sessions = [
+            s for s in sessions if s.session_id not in reserved and info.seats(s.session_id)
+            in HAS_SEATS
+        ]  # fmt: skip
+    if state.get("fx_fits"):
+        held = [catalog[i] for i in reserved if i in catalog and catalog[i].start]
+
+        def fits(s) -> bool:
+            return bool(s.start) and not any(
+                h.day == s.day and s.start < h.end and h.start < s.end
+                for h in held
+                if h.session_id != s.session_id
+            )
+
+        sessions = [s for s in sessions if s.session_id not in reserved and fits(s)]
+    return sessions
 
 
 def session_row(s: Session, venue_of) -> dict:
@@ -619,6 +753,7 @@ def filter_panel(catalog, venue_of, favorites, reserved, signed_in):
 
     active = sum(is_set(k) for k in ["code", "title", "abstract", *FACET_ORDER])
     active += any(state.get(f"fx_{k}") for k in ("fav", "short", "res"))
+    active += bool(state.get("fx_hasseats")) + bool(state.get("fx_fits"))
     head, clear = st.columns([3, 2])
     head.markdown("#### 🔽 Filter" + (f" · {active}" if active else ""))
     if clear.button("Clear", disabled=not active, use_container_width=True):
@@ -683,6 +818,14 @@ def filter_panel(catalog, venue_of, favorites, reserved, signed_in):
 
     only_ids = None
     if signed_in:
+        seats_on = bool(state.get("fx_hasseats") or state.get("fx_fits"))
+        with st.expander("🎟️ Seats", expanded=seats_on):
+            st.checkbox("Has seats (🟢 🟡 🟠)", key="fx_hasseats")
+            st.checkbox(
+                "Fits my reservations",
+                key="fx_fits",
+                help="No time clash with the sessions you've reserved.",
+            )
         shortlist = st.session_state.get("shortlist_ids", set())
         sets = {"fav": favorites, "short": shortlist, "res": reserved}
         # Labels stay fixed (counts go in the caption) so ticks survive reruns.
@@ -760,6 +903,7 @@ SELECTED_ROW = "background-color: rgba(42, 120, 214, 0.18)"  # blue step 450, ti
 def icon_columns() -> dict:
     return {
         "sub_venue": st.column_config.TextColumn("sub-venue"),
+        "seats": st.column_config.TextColumn("seats", help="Live seat availability"),
         "map": st.column_config.LinkColumn(
             "map", display_text="🗺️", width=50, help="Venue map / floor plans"
         ),
@@ -824,14 +968,15 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
             ):
                 run_action(name, fn, targets, picked)
         if no_seating:
-            names = ", ".join(r["code"] for r in no_seating)
-            st.warning(
-                f"{NO_RES_ICON} Some of the sessions you have selected do not have reserved "
-                f"seating: {names}."
-                if len(no_seating) < len(picked)
-                else f"{NO_RES_ICON} None of the sessions you have selected have reserved "
-                f"seating ({names})."
-            )
+            full = [r["code"] for r in no_seating if info.status(r["sessionId"]) == FULL]
+            none = [r["code"] for r in no_seating if info.status(r["sessionId"]) != FULL]
+            if none:
+                st.warning(
+                    f"{NO_RES_ICON} Some of the sessions you have selected do not have "
+                    f"reserved seating: {', '.join(none)}."
+                )
+            if full:
+                st.warning(f"🔴 Full (no seats left at the last seat check): {', '.join(full)}.")
         if to_reserve and (note := release_note(viewer_tz())):
             st.caption(f"🗓️ {note}")
 
@@ -851,7 +996,8 @@ def reserve_in_viewer_tz(ids: list[str]):
 def reservation_icon(session_id: str, reserved: set[str]) -> str:
     if session_id in reserved:
         return RES_ICON
-    return "" if reservation_info().can_reserve(session_id) else NO_RES_ICON
+    status = reservation_info().status(session_id)
+    return NO_RES_ICON if status in (WALK_UP, NOT_RESERVABLE) else ""
 
 
 def run_action(name: str, fn, targets: list[str], picked: list[dict]) -> None:

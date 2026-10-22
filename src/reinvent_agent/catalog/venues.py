@@ -76,6 +76,11 @@ def place(venue: str | None, room: str | None) -> str | None:
     return venue or sub
 
 
+def canonical_venue(name: str) -> str:
+    """One name per campus: the API also says "Wynn/Encore" for what is "Wynn"."""
+    return VENUE_ALIASES.get(name.strip().lower()) or venue_named_in(name) or name
+
+
 def venue_named_in(room: str) -> str | None:
     low = room.lower()
     for alias, venue in sorted(VENUE_ALIASES.items(), key=lambda kv: -len(kv[0])):
@@ -108,7 +113,7 @@ class VenueInferrer:
     def infer(self, session: Session) -> tuple[str | None, str]:
         """Returns ``(venue, source)``; source is api, room-name, room-learned or none."""
         if session.venue:
-            return session.venue, "api"
+            return canonical_venue(session.venue), "api"
         if not session.room:
             return None, "none"
         named = venue_named_in(session.room)

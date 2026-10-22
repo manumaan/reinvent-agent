@@ -32,6 +32,16 @@ API_OPENS = datetime(2026, 10, 8, 0, 0, tzinfo=EVENT_TZ)
 API_POLL_UNTIL = API_OPENS + timedelta(days=1)
 
 RESERVABLE, WALK_UP, NOT_RESERVABLE, UNKNOWN = "reservable", "walk-up", "not reservable", "unknown"
+FULL = "full"
+# Seat bands (SeatAvailability) -> how the app shows them.
+SEAT_BANDS = {
+    "available": "🟢 available",
+    "limited": "🟡 limited",
+    "veryLimited": "🟠 very limited",
+    "unavailable": "🔴 full",
+    "walkUp": "🚶 walk-up",
+}
+HAS_SEATS = ("available", "limited", "veryLimited")
 
 
 def _zone(tz: str | None) -> ZoneInfo | None:
@@ -85,27 +95,46 @@ def release_note(tz: str | None = None, now: datetime | None = None) -> str | No
 
 
 class ReservationInfo:
-    """Per-session reservation status from the catalog's own data."""
+    """Per-session reservation status: live seat data when checked, else the catalog's.
 
-    def __init__(self, sessions: Iterable[Session]):
+    ``live``: ``{sessionId: {"reservable": bool, "seats": band | None}}`` from a seat
+    check (``seats.check_seats``); it wins over the (possibly old) catalog download.
+    """
+
+    def __init__(self, sessions: Iterable[Session], live: dict[str, dict] | None = None):
         self.by_id = {s.session_id: s for s in sessions}
+        self.live = live or {}
         # Before release every session reads isReservable=false; only once some
         # session is reservable does "false" really mean "no reserved seating".
-        self.published = any(s.is_reservable for s in self.by_id.values())
+        self.published = bool(self.live) or any(s.is_reservable for s in self.by_id.values())
+
+    def _fields(self, session_id: str) -> tuple[bool, str | None] | None:
+        if (row := self.live.get(session_id)) is not None:
+            return row["reservable"], row.get("seats")
+        s = self.by_id.get(session_id)
+        return (s.is_reservable, s.seat_availability) if s else None
+
+    def seats(self, session_id: str) -> str | None:
+        """The seat band (available / limited / veryLimited / unavailable / walkUp)."""
+        f = self._fields(session_id)
+        return f[1] if f else None
 
     def status(self, session_id: str) -> str:
-        s = self.by_id.get(session_id)
-        if s is None:
+        f = self._fields(session_id)
+        if f is None:
             return UNKNOWN
-        if s.seat_availability == SEAT_WALK_UP:
+        reservable, band = f
+        if band == SEAT_WALK_UP:
             return WALK_UP
-        if s.is_reservable:
+        if reservable and band == "unavailable":
+            return FULL
+        if reservable:
             return RESERVABLE
         return NOT_RESERVABLE if self.published else UNKNOWN
 
     def can_reserve(self, session_id: str) -> bool:
-        """False only when the catalog says so; unknown sessions are left to the API."""
-        return self.status(session_id) not in (WALK_UP, NOT_RESERVABLE)
+        """False when the data says no (no reserved seating, walk-up, or full)."""
+        return self.status(session_id) not in (WALK_UP, NOT_RESERVABLE, FULL)
 
 
 @dataclass(frozen=True)

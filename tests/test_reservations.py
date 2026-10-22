@@ -61,3 +61,48 @@ def test_status_unknown_until_catalog_has_reservation_data():
     assert after.status("W") == WALK_UP and not after.can_reserve("W")
     assert ReservationInfo([s("W", False, "walkUp")]).status("W") == WALK_UP
     assert after.status("missing") == UNKNOWN
+
+
+def test_live_seats_override_the_catalog_snapshot():
+    from reinvent_agent.reservations import FULL
+
+    snapshot = [s("A"), s("B"), s("C"), s("D")]  # downloaded before seats opened
+    live = {
+        "A": {"reservable": True, "seats": "limited"},
+        "B": {"reservable": True, "seats": "unavailable"},
+        "C": {"reservable": False, "seats": None},
+        "D": {"reservable": False, "seats": "walkUp"},
+    }
+    info = ReservationInfo(snapshot, live)
+    assert (info.status("A"), info.seats("A"), info.can_reserve("A")) == (
+        RESERVABLE,
+        "limited",
+        True,
+    )
+    assert info.status("B") == FULL and not info.can_reserve("B")
+    assert info.status("C") == NOT_RESERVABLE and not info.can_reserve("C")
+    assert info.status("D") == WALK_UP
+    assert info.status("NEW") == UNKNOWN and info.can_reserve("NEW")  # let the API decide
+
+
+def test_seat_check_saves_and_counts(tmp_path, monkeypatch):
+    from reinvent_agent.seats import check_seats, load_seats
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+
+    class Pages:
+        def iter_session_pages(self, event_id, include_abstracts=True):
+            assert not include_abstracts
+            yield {
+                "items": [{"sessionId": "A", "isReservable": True, "seatAvailability": "available"}]
+            }
+            yield {
+                "items": [
+                    {"sessionId": "B", "isReservable": True, "seatAvailability": "unavailable"},
+                    {"sessionId": "C", "isReservable": False},
+                ]
+            }
+
+    check = check_seats(Pages(), "ev")
+    assert check.counts() == {"available": 1, "unavailable": 1, "none": 1}
+    assert load_seats("ev").sessions["B"] == {"reservable": True, "seats": "unavailable"}

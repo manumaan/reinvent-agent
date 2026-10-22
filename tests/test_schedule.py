@@ -121,7 +121,9 @@ def test_writes_report_outcomes_and_refresh_snapshot(tmp_path):
 
     client.closed = True
     r = ms.reserve(["SVS401"])
-    assert r.note and "October 6" in r.note and r.failed == {"SVS401": "reservations not open"}
+    # The note's wording follows the clock (portal releases, then the API opening).
+    assert r.note.startswith("Reservations aren't open yet.")
+    assert r.failed == {"SVS401": "reservations not open"}
 
 
 def test_writes_need_sign_in(tmp_path):

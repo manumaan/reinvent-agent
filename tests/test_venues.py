@@ -61,3 +61,14 @@ def test_sub_venue_is_the_most_specific_space():
     assert sub_venue("Level 3 | Content Hub") is None and sub_venue(None) is None
     assert place("Caesars Palace", room) == "Caesars Palace (Red Theater)"
     assert place("Wynn", None) == "Wynn" and place(None, room) == "Red Theater"
+
+
+def test_api_venue_names_are_canonical():
+    from reinvent_agent.catalog.venues import VenueInferrer, canonical_venue
+    from reinvent_agent.events_api.models import Session
+
+    assert canonical_venue("Wynn/Encore") == "Wynn"
+    assert canonical_venue("MGM Grand") == "MGM Grand"
+    assert canonical_venue("Somewhere New") == "Somewhere New"
+    inf = VenueInferrer.learn([])
+    assert inf.infer(Session(sessionId="x", title="t", venue="Wynn/Encore")) == ("Wynn", "api")
