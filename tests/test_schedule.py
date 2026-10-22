@@ -4,7 +4,7 @@ import time
 import pytest
 
 from reinvent_agent.events_api.models import Schedule, Session
-from reinvent_agent.schedule import MySchedule, NotSignedIn
+from reinvent_agent.schedule import MySchedule, NotSignedIn, WriteResult
 from tests.conftest import load
 
 
@@ -115,7 +115,14 @@ def test_writes_report_outcomes_and_refresh_snapshot(tmp_path):
 
     r = ms.reserve(["SVS401", "SVS310"])
     assert r.done == ["SVS401"]
-    assert r.failed == {"SVS310": "conflicts with another reservation (SVS401)"}
+    assert r.failed == {"SVS310": "conflicts with SVS401, which you've reserved at that time"}
+    assert r.messages() == [
+        ("success", "Reserved: SVS401"),
+        (
+            "warning",
+            "Couldn't reserve SVS310: conflicts with SVS401, which you've reserved at that time",
+        ),
+    ]
     ms.cancel_reservation(["SVS401"])
     assert ms.load().reserved == []
 
@@ -222,3 +229,38 @@ def test_archive_keeps_withdrawn_sessions(tmp_path, monkeypatch):
     assert source.update_archive("ev", old) == 1
     assert source.update_archive("ev", new) == 1
     assert source.load_archive("ev")["A"] == {"code": "AMZ202-R", "title": "Gone"}
+
+
+def test_write_results_read_in_past_tense():
+    assert [WriteResult(a).past for a in WriteResult.PAST] == [
+        "Favorited",
+        "Unfavorited",
+        "Reserved",
+        "Cancelled reservation",
+    ]
+
+
+def test_closed_and_failed_requests_use_the_same_message_style(tmp_path):
+    client = WriteClient()
+    ms = MySchedule.with_inferred_venues("ev", lambda: client, catalog(), path=tmp_path / "s.json")
+    client.closed = True
+    lines = ms.reserve(["SVS401", "SVS310"]).messages()
+    assert lines[0][0] == "warning"
+    assert lines[0][1].startswith("Couldn't reserve SVS401, SVS310: reservations aren't open yet.")
+
+    def lost_response(ids):  # the write went through, the reply didn't arrive
+        client.favorites += ids
+        raise ConnectionError("connection reset")
+
+    def refused(ids):
+        raise ConnectionError("connection refused")
+
+    r = ms.attempt("favorite", ["ANT305"], lost_response)
+    assert r.messages() == [("success", "Favorited: ANT305")]  # re-checked: it's there
+    r = ms.attempt("reserve", ["AIM402"], refused)
+    assert r.messages() == [
+        ("warning", "Couldn't reserve AIM402: connection error (nothing changed - try again)")
+    ]
+    assert WriteResult("cancel reservation", failed={"X": "gone"}).messages() == [
+        ("warning", "Couldn't unreserve X: gone")
+    ]

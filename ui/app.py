@@ -484,8 +484,8 @@ def shortlist_tab(signed_in: bool):
         rank = {"available": 0, "limited": 1, "veryLimited": 2}
         info = reservation_info()
         shown = sorted(shown, key=lambda p: rank.get(info.seats(p.session.session_id) or "", 9))
-    if flash := st.session_state.pop("card_flash", None):
-        getattr(st, flash[0])(flash[1])
+    for kind, text in st.session_state.pop("card_flash", []):
+        getattr(st, kind)(text)
 
     cols = st.columns(3)
     for i, p in enumerate(shown):
@@ -521,39 +521,32 @@ def session_card(p, venue_of, is_fav: bool, signed_in: bool, reserved=frozenset(
 def reserve_button(where, s, is_res: bool, key: str) -> None:
     """Reserve / release one session; the result is checked against GetSchedule."""
     if is_res:
-        label, fn = "✖ Unreserve", my_schedule().cancel_reservation
+        label, fn, action = "✖ Unreserve", my_schedule().cancel_reservation, "cancel reservation"
     else:
         if not reservation_info().can_reserve(s.session_id):
             where.button("🎟️ Reserve", key=key, disabled=True, use_container_width=True,
                          help=f"Not reservable now: {seats_label(s.session_id)}")  # fmt: skip
             return
-        label, fn = f"{RES_ICON} Reserve", reserve_in_viewer_tz
+        label, fn, action = f"{RES_ICON} Reserve", reserve_in_viewer_tz, "reserve"
     if where.button(label, key=key, use_container_width=True):
-        try:
-            result = fn([s.session_id])
-        except Exception as e:
-            st.session_state["card_flash"] = ("error", f"{s.code}: {e}")
-        else:
-            if result.done:
-                st.session_state["card_flash"] = (
-                    "success",
-                    f"{result.action.capitalize()}: {s.code}",
-                )
-            else:
-                why = result.note or "; ".join(result.failed.values())
-                st.session_state["card_flash"] = ("warning", f"{s.code} not done: {why}")
-        st.rerun()
+        card_action(action, fn, s)
+
+
+def card_action(action: str, fn, s) -> None:
+    """Run one card/dialog action and show the outcome in the shared message style."""
+    result = my_schedule().attempt(action, [s.session_id], fn)
+    st.session_state["card_flash"] = result.messages(lambda sid: s.code)
+    st.rerun()
 
 
 def fav_button(where, s, is_fav: bool, key: str) -> None:
     label = "☆ Unfavorite" if is_fav else f"{FAV_ICON} Favorite"
     if where.button(label, key=key, use_container_width=True):
-        try:
-            (my_schedule().unfavorite if is_fav else my_schedule().favorite)([s.session_id])
-        except Exception as e:
-            st.error(f"Could not update favorites: {e}")
-            return
-        st.rerun()
+        sched = my_schedule()
+        if is_fav:
+            card_action("unfavorite", sched.unfavorite, s)
+        else:
+            card_action("favorite", sched.favorite, s)
 
 
 @st.dialog("Session details", width="large")
@@ -1000,23 +993,18 @@ def reservation_icon(session_id: str, reserved: set[str]) -> str:
     return NO_RES_ICON if status in (WALK_UP, NOT_RESERVABLE) else ""
 
 
+ACTION_OF = {
+    "Favorite": "favorite",
+    "Unfavorite": "unfavorite",
+    "Reserve": "reserve",
+    "Unreserve": "cancel reservation",
+}
+
+
 def run_action(name: str, fn, targets: list[str], picked: list[dict]) -> None:
     code = {r["sessionId"]: r["code"] for r in picked}
-    try:
-        result = fn(targets)
-    except Exception as e:
-        msgs = [("error", f"{name} failed: {e}")]
-    else:
-        msgs = []
-        if result.done:
-            names = ", ".join(code.get(i, i) for i in result.done)
-            msgs.append(("success", f"{result.action.capitalize()}: {names}"))
-        if result.note:
-            msgs.append(("warning", result.note))
-        elif result.failed:
-            why = "; ".join(f"{code.get(i, i)} ({r})" for i, r in result.failed.items())
-            msgs.append(("warning", f"Not done: {why}"))
-    st.session_state["action_result"] = msgs
+    result = my_schedule().attempt(ACTION_OF[name], targets, fn)
+    st.session_state["action_result"] = result.messages(lambda sid: code.get(sid, sid))
     reset_table()
 
 
@@ -1180,19 +1168,20 @@ def withdrawn_notice(items: list[dict]) -> None:
         "with this id”), but your favorites or reservations still point at them. Names "
         "come from earlier catalog downloads."
     )
+    for kind, text in st.session_state.pop("withdrawn_flash", []):
+        getattr(st, kind)(text)
+    code = {e["sessionId"]: e.get("code") or e["sessionId"] for e in items}
+    sched = my_schedule()
     favs = [e["sessionId"] for e in items if e.get("favorite")]
-    if favs and st.button(f"☆ Remove {len(favs)} withdrawn from favorites"):
-        result = my_schedule().unfavorite(favs)
-        if result.failed:
-            st.error("Not removed: " + "; ".join(f"{k}: {v}" for k, v in result.failed.items()))
-        else:
-            st.rerun()
     held = [e["sessionId"] for e in items if e.get("reserved")]
-    if held and st.button(f"✖ Release {len(held)} withdrawn reservation(s)"):
-        result = my_schedule().cancel_reservation(held)
-        if result.failed:
-            st.error("Not released: " + "; ".join(f"{k}: {v}" for k, v in result.failed.items()))
-        else:
+    for ids, label, action, call in (
+        (favs, f"☆ Remove {len(favs)} withdrawn from favorites", "unfavorite", sched.unfavorite),
+        (held, f"✖ Release {len(held)} withdrawn reservation(s)", "cancel reservation",
+         sched.cancel_reservation),
+    ):  # fmt: skip
+        if ids and st.button(label):
+            result = sched.attempt(action, ids, call)
+            st.session_state["withdrawn_flash"] = result.messages(lambda sid: code[sid])
             st.rerun()
 
 
@@ -1696,7 +1685,7 @@ def unattended_section(approved) -> None:
                           placeholder="you@example.com")  # fmt: skip
     if e2.button("Subscribe", use_container_width=True, disabled="@" not in email):
         accounts.subscribe(email.strip(), cfg)
-        set_flash(("success", f"Check {email} for AWS's confirmation link."))
+        set_flash(("success", f"Subscribed {email}. Click the confirmation link AWS emailed you."))
 
     st.markdown("**Test now**")
     t1, t2, t3 = st.columns(3)

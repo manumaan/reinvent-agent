@@ -40,6 +40,58 @@ class WriteResult:
     failed: dict[str, str] = field(default_factory=dict)  # session ID -> reason
     note: str | None = None  # whole-request problem, e.g. reservations not open yet
 
+    PAST = {
+        "favorite": "Favorited",
+        "unfavorite": "Unfavorited",
+        "reserve": "Reserved",
+        "cancel reservation": "Cancelled reservation",
+    }
+
+    VERB = {
+        "favorite": "favorite",
+        "unfavorite": "unfavorite",
+        "reserve": "reserve",
+        "cancel reservation": "unreserve",
+    }
+    # Where each action shows up in GetSchedule, and whether it should be there after.
+    TARGET = {
+        "favorite": ("favorites", True),
+        "unfavorite": ("favorites", False),
+        "reserve": ("reserved", True),
+        "cancel reservation": ("reserved", False),
+    }
+
+    @property
+    def past(self) -> str:
+        """What was done, for messages: "Reserved", never "Reserve"."""
+        return self.PAST.get(self.action, self.action.capitalize())
+
+    def messages(self, code=lambda sid: sid) -> list[tuple[str, str]]:
+        """User-facing lines, one style everywhere:
+        ``("success", "Reserved: A, B")`` and ``("warning", "Couldn't reserve C: full")``.
+        """
+        out = []
+        if self.done:
+            out.append(("success", f"{self.past}: {', '.join(code(i) for i in self.done)}"))
+        verb = self.VERB.get(self.action, self.action)
+        if self.note and self.failed:  # one reason for all, e.g. reservations not open
+            why = self.note[:1].lower() + self.note[1:]
+            names = ", ".join(code(i) for i in self.failed)
+            out.append(("warning", f"Couldn't {verb} {names}: {why}"))
+        else:
+            out += [
+                ("warning", f"Couldn't {verb} {code(i)}: {why}") for i, why in self.failed.items()
+            ]
+        return out
+
+
+def error_reason(e: Exception) -> str:
+    """Short, readable reason for a request that failed outright."""
+    name = type(e).__name__
+    if "Connect" in name or "Timeout" in name or isinstance(e, OSError):
+        return "connection error"
+    return (str(e) or name)[:160]
+
 
 class NotSignedIn(RuntimeError):
     pass
@@ -141,9 +193,10 @@ class MySchedule:
                 out.done.append(f.session_id)
                 continue
             reason = FAILURE_TEXT.get(f.code, f.code)
-            if f.conflicts_with:
-                codes = [self.describe(c).get("code", c) for c in f.conflicts_with]
-                reason += f" ({', '.join(codes)})"
+            if f.code == "scheduleConflict":
+                codes = [self.describe(c).get("code") or c for c in f.conflicts_with]
+                held = " and ".join(codes) if codes else "a session"
+                reason = f"conflicts with {held}, which you've reserved at that time"
             out.failed[f.session_id] = reason
         return out
 
@@ -174,6 +227,34 @@ class MySchedule:
                 out.done.append(sid)
             except Exception as e:
                 out.failed[sid] = str(e)
+        return out
+
+    def attempt(self, action: str, ids: list[str], call) -> WriteResult:
+        """Run a write; if the request itself fails, re-read GetSchedule and report what
+        really happened (a lost response may still have gone through)."""
+        try:
+            return call(ids)
+        except NotSignedIn:
+            raise
+        except Exception as e:
+            return self.after_error(action, ids, e)
+
+    def after_error(self, action: str, ids: list[str], error: Exception) -> WriteResult:
+        out = WriteResult(action)
+        field_, present = WriteResult.TARGET[action]
+        try:
+            listed = set(getattr(self.refresh(), field_))
+        except Exception:
+            out.failed = {
+                sid: f"{error_reason(error)} (couldn't re-check your schedule - see My schedule)"
+                for sid in ids
+            }
+            return out
+        for sid in ids:
+            if (sid in listed) == present:
+                out.done.append(sid)
+            else:
+                out.failed[sid] = f"{error_reason(error)} (nothing changed - try again)"
         return out
 
     def favorite(self, ids: list[str]) -> WriteResult:
