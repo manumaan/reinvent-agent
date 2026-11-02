@@ -418,3 +418,36 @@ def test_tight_transfers_are_flagged_and_backups_must_be_reachable():
     p.venue = "MGM Grand"
     report = runner_for(api, clock)[0].run(make_plan(held, p, far_backup), "x", clock.t)
     assert "FAR" not in api.held and report.failed[0]["code"] == "P"
+
+
+def test_plan_lists_only_the_chosen_sessions_and_works_around_other_reservations():
+    held = s("HELD", "09:00", 60, venue="MGM Grand")  # reserved, not a favorite
+    both = s("BOTH", "16:00", 60, venue="MGM Grand")  # reserved and a favorite
+    clash = s("CLASH", "09:30", 60, venue="MGM Grand")  # overlaps HELD
+    far = s("FAR", "10:15", 60, venue="Wynn")  # free, but ~40 min from HELD
+    near = s("NEAR", "10:00", 60, venue="MGM Grand")
+    plan = build_plan(
+        "ev", [both, clash, far, near], lambda x: x.venue, reserved=["HELD", "BOTH"],
+        strategy="max_sessions", held=[held, both],
+    )  # fmt: skip
+    assert {i.code for i in plan.items} == {"BOTH", "CLASH", "FAR", "NEAR"}  # no HELD
+    assert {i.code for i in plan.primaries} == {"BOTH", "NEAR"}
+    assert plan.item("BOTH").priority == 1 and plan.item("CLASH").role == BACKUP
+    assert [h.code for h in plan.held] == ["HELD"]  # BOTH is in the list already
+    assert not plan.problems()
+
+    plan.item("CLASH").role = PRIMARY  # the user forces it in the table
+    assert any("CLASH overlaps HELD" in p for p in plan.problems())
+    back = ReservationPlan.from_json(plan.to_json())
+    assert [h.code for h in back.held] == ["HELD"]
+
+
+def test_one_venue_day_stays_at_the_venue_of_a_held_reservation():
+    held = s("HELD", "09:00", 60, venue="Wynn")
+    a = s("A", "11:00", 60, venue="MGM Grand")
+    b = s("B", "13:00", 60, venue="MGM Grand")
+    c = s("C", "11:00", 60, venue="Wynn")
+    plan = build_plan(
+        "ev", [a, b, c], lambda x: x.venue, reserved=["HELD"], strategy="one_venue", held=[held]
+    )
+    assert {i.code for i in plan.primaries} == {"C"}  # not the bigger MGM Grand set

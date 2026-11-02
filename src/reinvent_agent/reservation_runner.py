@@ -215,8 +215,7 @@ class ReservationRunner:
         if result is None:
             report.status = "closed"
             report.notes.append(
-                "Reservations were still closed (the Events API opens October 8). "
-                "Nothing was reserved."
+                "The Events API answered that reservations are closed. Nothing was reserved."
             )
             return
         self._settle([first], result)
@@ -305,7 +304,7 @@ class ReservationRunner:
     def _clashes_with_held(self, backup: PlanItem, replacing: PlanItem) -> bool:
         """Overlaps something you hold, or can't be reached from/to it in time."""
         for sid in self.held:
-            other = self.plan.item(sid)
+            other = self.plan.known(sid)
             if (
                 other
                 and other.session_id != replacing.session_id

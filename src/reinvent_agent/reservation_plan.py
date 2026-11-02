@@ -103,6 +103,9 @@ class ReservationPlan:
     version: int = 0
     created_at: float = field(default_factory=time.time)
     approved_at: float | None = None
+    # Reservations you hold that aren't in this list: not shown or booked, but the plan
+    # and the run's backups must not clash with them.
+    held: list[PlanItem] = field(default_factory=list)
 
     @property
     def primaries(self) -> list[PlanItem]:
@@ -114,6 +117,12 @@ class ReservationPlan:
 
     def item(self, session_id: str) -> PlanItem | None:
         return next((i for i in self.items if i.session_id == session_id), None)
+
+    def known(self, session_id: str) -> PlanItem | None:
+        """A plan item, or a held reservation outside the list."""
+        return self.item(session_id) or next(
+            (h for h in self.held if h.session_id == session_id), None
+        )
 
     def backups_for(self, primary_id: str) -> list[PlanItem]:
         """Backups covering a primary: same venue first (keeps a one-venue day intact
@@ -142,12 +151,18 @@ class ReservationPlan:
         out = []
         primaries = [i for i in self.items if i.role == PRIMARY]
         if not primaries:
-            out.append("Choose at least one primary session.")
+            out.append("Nothing to reserve: mark at least one session as 🎟️ reserve.")
         for i, a in enumerate(primaries):
             for b in primaries[i + 1 :]:
                 if a.overlaps(b):
                     out.append(
                         f"{a.code} and {b.code} overlap on {a.day}: make one of them a backup."
+                    )
+            for h in self.held:
+                if a.overlaps(h):
+                    out.append(
+                        f"{a.code} overlaps {h.code} on {a.day}, which you've reserved: "
+                        "make it a backup, or unreserve the other session first."
                     )
         return out
 
@@ -155,13 +170,15 @@ class ReservationPlan:
         """Consecutive reserve sessions you can't reach in time: (from, to, gap, travel)."""
         out = []
         by_day: dict[str, list[PlanItem]] = {}
-        for p in self.items:
+        held = {h.session_id for h in self.held}
+        for p in [*self.items, *self.held]:
             if p.role == PRIMARY and p.day and p.start:
                 by_day.setdefault(p.day, []).append(p)
         for items in by_day.values():
             items.sort(key=lambda p: p.start)
             for a, b in zip(items, items[1:], strict=False):
-                if hit := a.too_close(b):
+                both_held = a.session_id in held and b.session_id in held
+                if not both_held and (hit := a.too_close(b)):
                     out.append((a, b, *hit))
         return out
 
@@ -175,6 +192,7 @@ class ReservationPlan:
     def from_json(cls, text: str) -> ReservationPlan:
         data = json.loads(text)
         data["items"] = [PlanItem(**i) for i in data["items"]]
+        data["held"] = [PlanItem(**i) for i in data.get("held", [])]
         return cls(**data)
 
 
@@ -199,18 +217,47 @@ def build_plan(
     venue_of: Callable[[Session], str | None],
     reserved: Iterable[str] = (),
     strategy: str = "max_sessions",
+    held: Iterable[Session] = (),
 ) -> ReservationPlan:
-    """Draft plan from favorites (+ existing reservations, which stay primaries).
+    """Draft plan listing exactly ``sessions`` (those already reserved stay primaries).
 
     ``max_sessions``: per day the largest non-overlapping set, any venue.
     ``one_venue``: per day the best single venue (see planner.plan_one_venue_per_day).
     Everything else becomes a backup for the primaries it overlaps.
+
+    ``held``: reservations outside the list. They aren't listed, but no primary may
+    clash with them (time or travel), and a one-venue day stays at their venue.
     """
     from reinvent_agent.planner import best_non_overlapping, plan_one_venue_per_day
 
     sessions = list({s.session_id: s for s in sessions}.values())
     reserved = set(reserved)
     timed = [s for s in sessions if s.start and s.end and not s.is_all_day_session]
+    held = [h for h in held if h.session_id not in {s.session_id for s in sessions}]
+    held_timed = [h for h in held if h.start and h.end]
+
+    def clashes_with_held(s: Session) -> bool:
+        for h in held_timed:
+            if h.day != s.day:
+                continue
+            first, second = sorted((s, h), key=lambda x: x.start)
+            gap = (second.start - first.end).total_seconds() / 60
+            if gap < travel_minutes(venue_of(s), venue_of(h)):  # negative gap: overlap
+                return True
+        return False
+
+    timed = [s for s in timed if s.session_id in reserved or not clashes_with_held(s)]
+    if strategy == "one_venue":
+        venues_held: dict = {}
+        for h in held_timed:
+            venues_held.setdefault(h.day, set()).add(venue_of(h))
+        timed = [
+            s
+            for s in timed
+            if s.session_id in reserved
+            or s.day not in venues_held
+            or venue_of(s) in venues_held[s.day]
+        ]
     if strategy == "one_venue":
         plan = plan_one_venue_per_day(timed, venue_of, reserved)
         chosen = {x.session_id for d in plan.days for x in d.sessions}
@@ -236,7 +283,12 @@ def build_plan(
         )
         for s in sorted(sessions, key=lambda s: (s.start is None, s.start or 0, s.code))
     ]
-    out = ReservationPlan(event_id=event_id, items=items, strategy=strategy)
+    out = ReservationPlan(
+        event_id=event_id,
+        items=items,
+        strategy=strategy,
+        held=[plan_item(h, venue_of(h), PRIMARY, 1) for h in held],
+    )
     out.link_backups()
     return out
 

@@ -43,22 +43,24 @@ uv run reinvent-agent ask "Which sessions touch on zero-ETL between Aurora and R
 uv run streamlit run ui/app.py                # Ask / Search / My schedule / Catalog, with in-app sign-in
 ```
 
-### Reserving seats (portal Oct 6, API Oct 8)
+### Reserving seats
 
-Seat reservations open in the **re:Invent portal on Oct 6, 2026** (first half of seats 9:00 AM PDT, second half 5:00 PM PDT); the **Events API**, which this app and the unattended run use, opens on **Oct 8** (time not announced). In the app's **Plans** tab (or the `reserve` CLI):
+The Events API is open for reservations. Reserve directly from **Search** or the **Short list** (live seat availability shown), or automate it in the **Plans** tab (or the `reserve` CLI):
 
-1. **Build and approve a plan** from your favorites: sessions to reserve (never overlapping), a priority each, and backups tried when an overlapping session is full.
-2. **Oct 6:** reserve by hand in the portal using the plan's **portal checklist** (priority order, backups; downloadable CSV).
-3. **Oct 8:** enable the unattended run and subscribe an email. A Lambda checks every 2 minutes through Oct 8 (PDT), silently while the API is closed; once it opens it reserves whatever in the plan you don't hold yet (priority order, 30 sessions/min, read-back after every batch, backups), emails the result and stops. Sign-in problems are emailed at most hourly. A reminder check runs on Oct 7, 6:00 PM PDT: sign in again that evening and press *Refresh cloud sign-in*.
+1. **Build and approve a plan** from your favorites and/or short list: sessions to reserve (never overlapping, with travel time between venues), a priority each, and backups tried when an overlapping session is full.
+2. **Enable the unattended run** and subscribe an email.
+3. **Schedule a run** for any date and time. A one-time EventBridge schedule invokes the Lambda, which reserves whatever in the approved plan you don't hold yet (priority order, 30 sessions/min, read-back after every batch, backups), emails the result and deletes its schedule. Runs more than 35 minutes away also get a sign-in and plan check 30 minutes before.
+
+Sign in again and press *Refresh cloud sign-in* shortly before a far-off run: Builder ID sessions expire on their own.
 
 ```bash
 uv run reinvent-agent reserve build && uv run reinvent-agent reserve approve
 uv run reinvent-agent auth push-secret            # enable the unattended run
 uv run reinvent-agent reserve notify you@example.com
+uv run reinvent-agent reserve schedule "2026-11-10 09:00" --tz America/Los_Angeles
+uv run reinvent-agent reserve status              # plan, scheduled runs, recent runs
+uv run reinvent-agent reserve unschedule 20261110T1700
 uv run reinvent-agent reserve preflight --cloud   # test sign-in + email now
-uv run reinvent-agent reserve status
-uv run reinvent-agent reserve run --cloud         # test the cloud run now (expect "closed" before Oct 8)
-uv run reinvent-agent reserve run --wait-minutes 10   # manual fallback from your machine (Oct 8+)
 ```
 
 The app and CLI read the bucket, table and secret names from the deployed stacks' outputs, so there is nothing to configure. Environment variables (`REINVENT_VECTOR_BUCKET`, `REINVENT_SESSIONS_TABLE`, `REINVENT_MODEL`, `REINVENT_LLM_PROVIDER`, `ANTHROPIC_API_KEY`, …; see `src/reinvent_agent/config.py`) override them. `uv run reinvent-agent config show` prints what is in effect (never the key).
@@ -89,11 +91,12 @@ cd infra && npx aws-cdk@2 synth
 | `src/reinvent_agent/qa.py` | Q&A agent: Claude with `catalog_search`, `get_my_schedule` and `plan_one_venue_per_day` tools |
 | `src/reinvent_agent/schedule.py` | Your GetSchedule, cached locally (synced on sign-in) and joined with catalog details |
 | `src/reinvent_agent/reservation_plan.py` | Reservation plans (primaries, priorities, backups), approval and storage in DynamoDB |
-| `src/reinvent_agent/reservation_runner.py`, `lambda_handler.py` | The Oct 8 run: poll until the API opens, paced reserve, read-back, backups, SNS report |
+| `src/reinvent_agent/reservation_runner.py`, `lambda_handler.py` | The automated run: paced reserve, read-back, backups, SNS report |
+| `src/reinvent_agent/run_schedule.py` | One-time schedules for automated runs at a chosen date and time |
 | `src/reinvent_agent/accounts.py` | Token storage (local or shared with the cloud run), notifications, cloud invoke |
 | `src/reinvent_agent/planner.py` | Deterministic planning, e.g. one venue per day from your favorites |
 | `src/reinvent_agent/cli.py` | `reinvent-agent` CLI |
 | `ui/app.py` | Streamlit app (run locally) |
-| `infra/` | AWS CDK app: data (S3, DynamoDB, secrets), search (S3 Vectors), reservations (Lambda, Scheduler, SNS) |
+| `infra/` | AWS CDK app: data (S3, DynamoDB, secrets), search (S3 Vectors), reservations (Lambda, SNS, scheduler role) |
 | `fixtures/` | OpenAPI spec, public API samples, synthetic re:Invent fixtures |
 | `docs/` | Design and spike notes |

@@ -114,27 +114,37 @@ def sidebar() -> bool:
         st.sidebar.error(login["status"])
         login["status"] = "idle"
 
-    if tokens is None:
-        st.sidebar.write(
-            "Not signed in. Sign in with the AWS Builder ID you registered for re:Invent "
-            "to load the full catalog and your schedule."
-        )
+    def sign_in_button() -> None:
         if login["status"] != "running" and st.sidebar.button(
             "Sign in with AWS Builder ID", type="primary"
         ):
             login.update(status="running", url=None)
             threading.Thread(target=_login_worker, args=(login,), daemon=True).start()
             st.rerun()
+
+    if tokens is None:
+        st.sidebar.write(
+            "Not signed in. Sign in with the AWS Builder ID you registered for re:Invent "
+            "to load the full catalog and your schedule."
+        )
+        sign_in_button()
+        return False
+    if login["status"] == "running":  # signing in again over expired tokens
         return False
 
     just_signed_in = login["status"] == "done"
     login["status"] = "idle"
-    st.sidebar.success("Signed in")
+    signed_in_slot = st.sidebar.empty()
     # Fetch fresh from AWS on sign-in and whenever the page is (re)opened, so changes
     # made in the AWS portal (e.g. reservations) show at once, not after the cache age.
     new_visit = "schedule_synced" not in st.session_state
     st.session_state["schedule_synced"] = True
-    schedule_status(refresh=just_signed_in or new_visit)
+    if not schedule_status(refresh=just_signed_in or new_visit):
+        signed_in_slot.error("Your AWS Builder ID sign-in has expired. Please sign in again.")
+        st.session_state.pop("schedule_synced", None)  # re-sync after signing in
+        sign_in_button()
+        return False
+    signed_in_slot.success("Signed in")
     st.sidebar.caption(
         "Unattended reservations: "
         + ("**on**" if accounts.unattended_enabled() else "off")
@@ -157,19 +167,26 @@ def sidebar() -> bool:
     return True
 
 
-def schedule_status(refresh: bool) -> None:
-    """Sync GetSchedule into the local snapshot (on sign-in, when stale, or on demand)."""
+def schedule_status(refresh: bool) -> bool:
+    """Sync GetSchedule into the local snapshot (on sign-in, when stale, or on demand).
+
+    False when the sign-in itself no longer works; other failures just show a warning.
+    """
     sched = my_schedule()
     manual = st.sidebar.button("Refresh my schedule")
     try:
         data = sched.load(refresh=refresh or manual)
+    except AuthError:
+        return False
     except Exception as e:
-        return st.sidebar.warning(f"Could not load your schedule: {e}")
+        st.sidebar.warning(f"Could not load your schedule: {e}")
+        return True
     when = time.strftime("%H:%M", time.localtime(sched.fetched_at() or time.time()))
     st.sidebar.caption(
         f"Schedule synced {when}: {len(data.favorites)} favorites, "
         f"{len(data.reserved)} reserved, {len(data.personal_time)} personal time."
     )
+    return True
 
 
 # --- backends -----------------------------------------------------------------
@@ -242,7 +259,10 @@ def run_seat_check() -> None:
     if client is None:
         return
     with st.spinner("Checking live seat availability…"):
-        check_seats(client, cfg.event_id)
+        try:
+            check_seats(client, cfg.event_id)
+        except Exception as e:  # never take the page down: the last check still shows
+            st.warning(f"Couldn't check seats: {e}")
 
 
 def seats_label(session_id: str) -> str:
@@ -1476,6 +1496,67 @@ def venue_maps_section() -> None:
         )
 
 
+def scheduled_runs(approved) -> None:
+    """Pick a date and time for the automated run; list and cancel upcoming ones."""
+    from datetime import datetime
+    from datetime import time as dtime
+    from zoneinfo import ZoneInfo
+
+    from reinvent_agent.reservations import format_time
+    from reinvent_agent.run_schedule import cancel_run, list_runs, schedule_run
+
+    if not (cfg.reservation_function_arn and cfg.scheduler_role_arn):
+        return st.warning(
+            "Redeploy to use scheduled runs: `cd infra && npx aws-cdk@2 deploy --all`, "
+            "then restart the app."
+        )
+    tz = viewer_tz() or "America/Los_Angeles"
+    client = accounts.scheduler_client(cfg)
+    try:
+        runs = list_runs(client)
+    except Exception as e:
+        return st.error(f"Couldn't read scheduled runs: {e}")
+    for r in runs:
+        c1, c2 = st.columns([4, 1])
+        check = " · sign-in check 30 min before" if r.has_check else ""
+        c1.markdown(f"🗓️ **{r.when.astimezone(ZoneInfo(tz)):%a %b %-d %Y}**, "
+                    f"{format_time(r.when, tz)}{check}")  # fmt: skip
+        if c2.button("✖ Cancel", key=f"cancel_run_{r.stamp}", use_container_width=True):
+            try:
+                cancel_run(r.stamp, client)
+            except Exception as e:
+                set_flash(("error", f"Couldn't cancel the run: {e}"))
+            set_flash(("success", "Cancelled the scheduled run."))
+    c1, c2, c3 = st.columns([2, 2, 2])
+    day = c1.date_input("Date", value=datetime.now(ZoneInfo(tz)).date(), key="run_date")
+    at = c2.time_input(f"Time ({tz})", value=dtime(9, 0), step=300, key="run_time")
+    missing = []
+    if approved is None:
+        missing.append("approve a plan")
+    if not accounts.unattended_enabled():
+        missing.append("enable the unattended run")
+    c3.markdown("&nbsp;")
+    if c3.button("⏰ Schedule run", type="primary", use_container_width=True,
+                 disabled=bool(missing)):  # fmt: skip
+        when = datetime.combine(day, at, tzinfo=ZoneInfo(tz))
+        try:
+            schedule_run(when, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn, client)
+        except ValueError as e:
+            set_flash(("warning", f"Couldn't schedule the run: {e}"))
+        except Exception as e:
+            if "Conflict" in type(e).__name__:
+                set_flash(("warning", "Couldn't schedule the run: one is already set for then."))
+            set_flash(("error", f"Couldn't schedule the run: {e}"))
+        set_flash(("success", f"Scheduled run for {when:%a %b %-d %Y}, {format_time(when, tz)}."))
+    if missing:
+        st.caption("To schedule a run: " + " and ".join(missing) + ".")
+    st.caption(
+        "A run really reserves sessions: it uses whichever plan is approved at that moment. "
+        "It stays scheduled until it fires or you cancel it. Sign in again shortly before "
+        "a far-off run and press Refresh cloud sign-in, because sign-ins expire on their own."
+    )
+
+
 def plans_tab(signed_in: bool):
     if not signed_in:
         return st.info("Sign in to plan from your favorites and reservations.")
@@ -1508,7 +1589,7 @@ def plans_tab(signed_in: bool):
         expanded=time.time() < API_OPENS.timestamp(),
     ):
         portal_checklist(approved or pstore.draft())
-    with st.expander("3 · Unattended run (Oct 8) and notifications", expanded=bool(approved)):
+    with st.expander("3 · Automated run and notifications", expanded=bool(approved)):
         unattended_section(approved)
     runs = pstore.runs(10)
     if runs:
@@ -1561,9 +1642,9 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
     draft = pstore.draft()
     shortlist = st.session_state.get("shortlist_ids", set())
     pools = {
-        "favorites": list(dict.fromkeys(sched.reserved + sched.favorites)),
-        "shortlist": list(dict.fromkeys(sched.reserved + sorted(shortlist))),
-        "both": list(dict.fromkeys(sched.reserved + sched.favorites + sorted(shortlist))),
+        "favorites": list(sched.favorites),
+        "shortlist": sorted(shortlist),
+        "both": list(dict.fromkeys([*sched.favorites, *sorted(shortlist)])),
     }
     sources = {"favorites": "your favorites", "shortlist": "your short list",
                "both": "your favorites + short list"}  # fmt: skip
@@ -1575,6 +1656,7 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
             sched_.venue_of,
             sched.reserved,
             strategy,
+            held=sched_.sessions(sched.reserved),  # outside the list: worked around, not shown
         )
         plan.source = source
         pstore.save_draft(plan)
@@ -1594,7 +1676,12 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
         "Start from", options, key="plan_strategy", format_func=STRATEGIES.get, horizontal=True
     )
     b1, b2, b3 = st.columns(3)
-    if b1.button("Rebuild from favorites", use_container_width=True):
+    if b1.button(
+        "Rebuild from favorites",
+        use_container_width=True,
+        disabled=not sched.favorites,
+        help=None if sched.favorites else "You have no favorites yet.",
+    ):
         st.session_state["plan_rebuild"] = ("favorites", strategy)
         st.rerun()
     if b2.button(
@@ -1619,6 +1706,12 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
     st.caption(
         f"Draft built from {sources.get(draft.source, draft.source)} "
         f"· {STRATEGIES.get(draft.strategy, draft.strategy).lower()}."
+        + (
+            f" {len(draft.held)} reservation(s) outside this list aren't shown, but the plan "
+            "works around them."
+            if draft.held
+            else ""
+        )
     )
 
     rows = [
@@ -1661,7 +1754,11 @@ def plan_editor(pstore, sched_: MySchedule, sched) -> None:
         item.role, item.priority = role, by_prio[row["priority"]]
         items.append(item)
     plan = ReservationPlan(
-        event_id=cfg.event_id, items=items, strategy=draft.strategy, source=draft.source
+        event_id=cfg.event_id,
+        items=items,
+        strategy=draft.strategy,
+        source=draft.source,
+        held=draft.held,
     )
     plan.link_backups()
 
@@ -1777,33 +1874,15 @@ def portal_checklist(plan) -> None:
 
 
 def unattended_section(approved) -> None:
-    from reinvent_agent.reservations import SCHEDULE
-
-    tz = viewer_tz()
     st.markdown(
         "The cloud job signs in with a copy of your Builder ID tokens (Secrets Manager) and "
-        "runs at these times, even with your laptop closed. On Oct 8 it checks every 2 "
-        "minutes, stays silent while the API is closed, and reserves your approved plan "
-        "(minus anything you already hold) as soon as it opens, then emails you."
+        "reserves your approved plan, minus anything you already hold, then emails you. "
+        "It runs even with your laptop closed."
     )
-    st.dataframe(
-        [
-            {"when": job.describe(tz), "what": job.label,
-             "does": "reserve the approved plan once the API opens" if job.action == "poll"
-             else "check sign-in + plan, email you"}
-            for job in SCHEDULE
-        ],
-        hide_index=True,
-        use_container_width=True,
-    )  # fmt: skip
     if not cfg.reservation_function:
         return st.warning(
-            "The scheduled job isn't deployed yet: run `cd infra && npx aws-cdk@2 deploy --all`."
+            "The automated run isn't deployed yet: run `cd infra && npx aws-cdk@2 deploy --all`."
         )
-    st.caption(
-        "Sign in again on the evening of Oct 7 (PDT) and press Refresh cloud sign-in: the "
-        "Builder ID session has its own lifetime, so older tokens may no longer work."
-    )
     c1, c2 = st.columns(2)
     if accounts.unattended_enabled():
         if c1.button("Refresh cloud sign-in", use_container_width=True):
@@ -1815,6 +1894,9 @@ def unattended_section(approved) -> None:
     elif c1.button("Enable unattended run", type="primary", use_container_width=True):
         accounts.enable_unattended(cfg)
         set_flash(("success", "Enabled. Your sign-in is now shared with the scheduled job."))
+
+    st.markdown("**⏰ Scheduled runs**")
+    scheduled_runs(approved)
 
     st.markdown("**Notifications**")
     subs = accounts.subscriptions(cfg)
@@ -1839,20 +1921,19 @@ def unattended_section(approved) -> None:
             set_flash(("error", f"Cloud check failed: {e}"))
         set_flash(("success" if result.get("ok") else "error", result.get("message", str(result))))
     run_help = (
-        "Invokes the exact Oct 8 code in the Lambda, once, without waiting. Before the API "
-        "opens it gets 'closed' and emails a 'closed' report (nothing reserved). Once the "
-        "API is open it reserves your approved plan for real."
+        "Runs the job in AWS right now, once. This really reserves your approved plan, "
+        "then emails the result."
     )
-    if t2.button("Test the cloud reserve run", use_container_width=True,
+    if t2.button("🎟️ Reserve the plan now (cloud)", use_container_width=True,
                  disabled=approved is None, help=run_help):  # fmt: skip
         try:
-            result = accounts.invoke_cloud("run", "cloud test", cfg)
+            result = accounts.invoke_cloud("run", "cloud run", cfg)
         except Exception as e:
             set_flash(("error", f"Cloud run failed: {e}"))
         set_flash(("info", f"Cloud run finished: {result.get('status')}. See Run history."))
     if t3.button(f"{RES_ICON} Reserve the plan now (this computer)", use_container_width=True,
                  disabled=approved is None,
-                 help="Manual fallback from Oct 8: runs the same logic here, once."):  # fmt: skip
+                 help="Runs here, once. This really reserves your approved plan."):  # fmt: skip
         from reinvent_agent.reservation_runner import ReservationRunner
 
         runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id)

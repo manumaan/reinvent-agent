@@ -86,8 +86,6 @@ def test_index_config_matches_application():
 def test_reservation_stack_schedules_lambda_and_topic():
     from stacks.reservation_stack import ReservationStack
 
-    from reinvent_agent.reservations import SCHEDULE
-
     app = App(context={"aws:cdk:bundling-stacks": []})  # don't build the Lambda package
     data = DataStack(app, "D")
     t = Template.from_stack(ReservationStack(app, "R", data=data))
@@ -101,15 +99,7 @@ def test_reservation_stack_schedules_lambda_and_topic():
         },
     )
     t.resource_count_is("AWS::SNS::Topic", 1)
-    t.resource_count_is("AWS::Scheduler::Schedule", len(SCHEDULE))
-    t.has_resource_properties(
-        "AWS::Scheduler::Schedule",
-        {
-            "ScheduleExpression": "rate(2 minutes)",
-            "StartDate": "2026-10-08T07:00:00Z",  # midnight PDT
-            "EndDate": "2026-10-09T07:00:00Z",
-            "ScheduleExpressionTimezone": "America/Los_Angeles",
-            "FlexibleTimeWindow": {"Mode": "OFF"},
-            "Target": Match.object_like({"Input": '{"action": "poll", "label": "API opening"}'}),
-        },
-    )
+    # No fixed dates: the app creates one-time schedules from the time the user picks.
+    t.resource_count_is("AWS::Scheduler::Schedule", 0)
+    outputs = t.find_outputs("*")
+    assert {"ReservationFunctionArn", "ReservationSchedulerRoleArn"} <= set(outputs)

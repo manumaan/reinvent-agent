@@ -136,6 +136,13 @@ def subscribe(email: str, cfg: Settings | None = None) -> None:
     _sns(cfg).subscribe(TopicArn=cfg.reservation_topic_arn, Protocol="email", Endpoint=email)
 
 
+def scheduler_client(cfg: Settings | None = None):
+    import boto3
+
+    cfg = cfg or settings()
+    return boto3.client("scheduler", region_name=cfg.region)
+
+
 def invoke_cloud(
     action: str, label: str, cfg: Settings | None = None, wait_seconds: int = 0
 ) -> dict:

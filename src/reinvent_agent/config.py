@@ -55,6 +55,8 @@ class Settings:
     plans_table: str | None
     reservation_topic_arn: str | None
     reservation_function: str | None
+    reservation_function_arn: str | None
+    scheduler_role_arn: str | None
     anthropic_key_secret_arn: str | None
     # A key of llm.PROVIDERS: "bedrock" (Claude on Amazon Bedrock, AWS credentials) or
     # "anthropic" (Claude API key). Embeddings always use Bedrock Titan.
@@ -140,6 +142,8 @@ def settings() -> Settings:
         plans_table=env("REINVENT_PLANS_TABLE") or outputs.get("PlansTableName"),
         reservation_topic_arn=outputs.get("ReservationTopicArn"),
         reservation_function=outputs.get("ReservationFunctionName"),
+        reservation_function_arn=outputs.get("ReservationFunctionArn"),
+        scheduler_role_arn=outputs.get("ReservationSchedulerRoleArn"),
         anthropic_key_secret_arn=key_secret,
         llm_provider=provider,
         model=env("REINVENT_MODEL") or llm.model_id(saved_model or llm.default_model),

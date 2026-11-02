@@ -15,7 +15,6 @@ catalog carries reservation data (some session reservable) or a session is marke
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -135,32 +134,3 @@ class ReservationInfo:
     def can_reserve(self, session_id: str) -> bool:
         """False when the data says no (no reserved seating, walk-up, or full)."""
         return self.status(session_id) not in (WALK_UP, NOT_RESERVABLE, FULL)
-
-
-@dataclass(frozen=True)
-class Job:
-    """One EventBridge Scheduler job for the unattended run (reservation_stack)."""
-
-    name: str
-    action: str  # preflight | poll
-    label: str
-    at: datetime | None = None  # one-time
-    start: datetime | None = None  # recurring window [start, end)
-    end: datetime | None = None
-    every_minutes: int | None = None
-
-    def describe(self, tz: str | None = None) -> str:
-        if self.at:
-            return f"{self.at:%a %b %-d}, {format_time(self.at, tz)}"
-        return (
-            f"{self.start:%a %b %-d}, every {self.every_minutes} min from "
-            f"{format_time(self.start, tz)} until {format_time(self.end, tz)} the next day"
-        )
-
-
-SCHEDULE = (
-    Job("reminder", "preflight", "day before the API opens",
-        at=datetime(2026, 10, 7, 18, 0, tzinfo=EVENT_TZ)),
-    Job("api-poll", "poll", "API opening", start=API_OPENS, end=API_POLL_UNTIL,
-        every_minutes=2),
-)  # fmt: skip

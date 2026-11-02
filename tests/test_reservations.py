@@ -38,16 +38,6 @@ def test_release_note_portal_then_api():
     assert release_note(now=datetime(2026, 10, 9, 1, 0, tzinfo=EVENT_TZ)) is None
 
 
-def test_schedule_is_reminder_then_all_day_poll_on_oct_8():
-    from reinvent_agent.reservations import API_OPENS, SCHEDULE
-
-    reminder, poll = SCHEDULE
-    assert reminder.action == "preflight" and reminder.at < API_OPENS
-    assert (poll.action, poll.every_minutes) == ("poll", 2)
-    assert poll.start == API_OPENS and (poll.end - poll.start).days == 1
-    assert "every 2 min from 12:00 AM PDT (12:30 PM IST)" in poll.describe("Asia/Kolkata")
-
-
 def s(sid, reservable=False, seats=None):
     return Session(sessionId=sid, title=sid, isReservable=reservable, seatAvailability=seats)
 

@@ -481,8 +481,8 @@ def _print_plan(plan) -> None:
 @reserve_app.command("status")
 def reserve_status():
     """Approved plan, unattended switch, schedule and recent runs."""
-    from reinvent_agent.accounts import subscriptions, unattended_enabled
-    from reinvent_agent.reservations import SCHEDULE
+    from reinvent_agent.accounts import scheduler_client, subscriptions, unattended_enabled
+    from reinvent_agent.run_schedule import list_runs
 
     store = _plan_store()
     plan = store.approved()
@@ -498,9 +498,10 @@ def reserve_status():
         + (", ".join(f"{s['endpoint']}{'' if s['confirmed'] else ' (unconfirmed)'}" for s in subs)
            or "none (reinvent-agent reserve notify EMAIL)")
     )  # fmt: skip
-    typer.echo("Schedule:")
-    for job in SCHEDULE:
-        typer.echo(f"  {job.describe()}  {job.label} ({job.action})")
+    runs = list_runs(scheduler_client())
+    typer.echo("Scheduled runs:" if runs else "No scheduled runs.")
+    for r in runs:
+        typer.echo(f"  {r.when:%a %b %-d %Y %H:%M %Z}  (id {r.stamp})")
     for r in store.runs(5):
         typer.echo(f"Run {r['label']}: {r['status']}, {len(r['reserved'])} reserved, "
                    f"{len(r['failed'])} not")  # fmt: skip
@@ -516,8 +517,14 @@ def reserve_build(
     sched = ms.load(refresh=True)
     from reinvent_agent.reservation_plan import build_plan
 
-    ids = list(dict.fromkeys(sched.reserved + sched.favorites))
-    plan = build_plan(ms.event_id, ms.sessions(ids), ms.venue_of, sched.reserved, strategy=strategy)
+    plan = build_plan(
+        ms.event_id,
+        ms.sessions(sched.favorites),
+        ms.venue_of,
+        sched.reserved,
+        strategy=strategy,
+        held=ms.sessions(sched.reserved),
+    )
     store.save_draft(plan)
     typer.echo(f"Draft: {len(plan.primaries)} to reserve, "
                f"{len(plan.items) - len(plan.primaries)} backups")  # fmt: skip
@@ -579,6 +586,47 @@ def reserve_run(
     report = runner.run(store.approved(), "manual", time.time() + wait_minutes * 60)
     store.save_run(report.to_dict())
     typer.echo(report.text())
+
+
+@reserve_app.command("schedule")
+def reserve_schedule(
+    when: str = typer.Argument(..., help='Local date and time, e.g. "2026-11-10 09:00"'),
+    tz: str = typer.Option("America/Los_Angeles", help="IANA timezone of that time"),
+):
+    """Reserve the approved plan automatically at this date and time."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from reinvent_agent.accounts import scheduler_client, unattended_enabled
+    from reinvent_agent.config import settings
+    from reinvent_agent.run_schedule import schedule_run
+
+    cfg = settings()
+    if not (cfg.reservation_function_arn and cfg.scheduler_role_arn):
+        typer.echo("Redeploy first: cd infra && npx aws-cdk@2 deploy --all")
+        raise typer.Exit(1)
+    if not unattended_enabled() or _plan_store().approved() is None:
+        typer.echo("Needs an approved plan and `auth push-secret` first.")
+        raise typer.Exit(1)
+    at = datetime.fromisoformat(when).replace(tzinfo=ZoneInfo(tz))
+    try:
+        run = schedule_run(
+            at, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn, scheduler_client()
+        )
+    except ValueError as e:
+        typer.echo(str(e))
+        raise typer.Exit(1) from None
+    typer.echo(f"Scheduled run for {at:%a %b %-d %Y %H:%M %Z} (id {run.stamp}).")
+
+
+@reserve_app.command("unschedule")
+def reserve_unschedule(run_id: str):
+    """Cancel a scheduled run (ids are listed by `reserve status`)."""
+    from reinvent_agent.accounts import scheduler_client
+    from reinvent_agent.run_schedule import cancel_run
+
+    cancel_run(run_id, scheduler_client())
+    typer.echo(f"Cancelled scheduled run {run_id}.")
 
 
 @reserve_app.command("notify")

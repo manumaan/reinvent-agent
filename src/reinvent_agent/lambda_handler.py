@@ -1,6 +1,6 @@
 """AWS Lambda entry point for the unattended reservation run.
 
-EventBridge Scheduler invokes it (see ``reservations.SCHEDULE``) with
+EventBridge Scheduler invokes it (see ``run_schedule``) with
 ``{"action": ..., "label": ...}``:
 
 * ``preflight`` -- sign-in + plan check; always emails the result.
@@ -92,7 +92,7 @@ def _handle(action, label, event, context, runner, store, stored):
             runner.notifier.notify(
                 f"ACTION NEEDED: re:Invent reservations ({label})",
                 "Sign-in is fine, but no reservation plan is approved. Approve one in the "
-                "app (Plans tab) before the API opens.",
+                "app (Plans tab) before the run.",
             )
         return {"ok": ok, "message": msg, "plan_version": plan.version if plan else None}
 
