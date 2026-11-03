@@ -162,3 +162,63 @@ def test_expired_sign_in_asks_to_sign_in_and_keeps_the_page_working(monkeypatch,
         config.settings.cache_clear()
         st.cache_data.clear()
         st.cache_resource.clear()
+
+
+def test_dry_run_shows_a_log_and_reserves_nothing(monkeypatch, tmp_path):
+    import time
+    from pathlib import Path
+
+    import streamlit as st
+
+    from reinvent_agent import accounts
+    from reinvent_agent.events_api import FileTokenStore, Tokens
+    from reinvent_agent.events_api.models import Schedule
+    from reinvent_agent.reservation_plan import PlanStore
+    from tests.test_reservation_run import FakeTable, item, live, make_plan
+    from tests.test_run_schedule import FakeScheduler
+
+    app_file = Path(__file__).resolve().parent.parent / "ui" / "app.py"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    FileTokenStore().save(Tokens("a", "r", time.time() + 3600))
+    outputs = {
+        "ReservationFunctionName": "fn",
+        "ReservationFunctionArn": "arn:fn",
+        "ReservationSchedulerRoleArn": "arn:role",
+    }
+    monkeypatch.setattr(config, "stack_outputs", lambda region, client=None: outputs)
+    config.settings.cache_clear()
+    st.cache_data.clear()
+    st.cache_resource.clear()
+
+    class Api:
+        def get_schedule(self, event_id):
+            return Schedule()
+
+        def iter_sessions(self, event_id, include_abstracts=True):
+            return iter([live("A", "09:00", "10:00")])
+
+    pstore = PlanStore(FakeTable(), "u", "reinvent2026")
+    pstore.approve(make_plan(item("A", "09:00", "10:00")))
+    monkeypatch.setattr(accounts, "plan_store", lambda cfg=None: pstore)
+    monkeypatch.setattr(accounts, "events_client", lambda cfg=None: Api())
+    monkeypatch.setattr(accounts, "unattended_enabled", lambda: True)
+    monkeypatch.setattr(accounts, "subscriptions", lambda cfg=None: [])
+    monkeypatch.setattr(accounts, "scheduler_client", lambda cfg=None: FakeScheduler())
+    try:
+        at = AppTest.from_file(str(app_file), default_timeout=30).run()
+        assert not at.exception
+        next(b for b in at.button if b.label == "🧪 Dry run (this computer)").click()
+        at = at.run()
+        assert not at.exception
+        report = at.session_state["dry_run_report"]
+        assert report["dry_run"] and report["log"][0]["code"] == "A"
+        assert any(m.label == "Reserved or already held" and m.value == "1" for m in at.metric)
+        assert any("Nothing was reserved" in c.value for c in at.caption)
+        assert pstore.runs() == []
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()

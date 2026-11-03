@@ -588,6 +588,31 @@ def reserve_run(
     typer.echo(report.text())
 
 
+@reserve_app.command("dry-run")
+def reserve_dry_run(
+    pretend_full: list[str] = typer.Option([], help="Session code to treat as full (repeatable)"),
+    cloud: bool = typer.Option(False, help="Run it in the deployed Lambda (tests that path)"),
+):
+    """Show what a run would do, step by step: reserves nothing, sends no email."""
+    from reinvent_agent.reservation_runner import RunReport, dry_run
+
+    store = _plan_store()
+    plan = store.approved() or store.draft()
+    full = [i.session_id for i in plan.items if i.code in pretend_full] if plan else []
+    if cloud:
+        from reinvent_agent.accounts import invoke_cloud
+
+        result = invoke_cloud("dry_run", "dry run", pretend_full=full)
+        if "report" not in result:
+            typer.echo(result.get("message", result))
+            raise typer.Exit(1)
+        report = RunReport(**result["report"])
+    else:
+        report = dry_run(_client(), DEFAULT_EVENT, plan, full)
+    typer.echo(report.text())
+    typer.echo("\nLog:\n" + report.log_text())
+
+
 @reserve_app.command("schedule")
 def reserve_schedule(
     when: str = typer.Argument(..., help='Local date and time, e.g. "2026-11-10 09:00"'),

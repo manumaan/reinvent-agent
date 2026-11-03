@@ -451,3 +451,157 @@ def test_one_venue_day_stays_at_the_venue_of_a_held_reservation():
         "ev", [a, b, c], lambda x: x.venue, reserved=["HELD"], strategy="one_venue", held=[held]
     )
     assert {i.code for i in plan.primaries} == {"C"}  # not the bigger MGM Grand set
+
+
+# --- step log and dry run ------------------------------------------------------
+
+
+def _steps(report):
+    return [(r["action"], r["code"], r["result"]) for r in report.log]
+
+
+def test_real_run_logs_every_step():
+    clock = Clock()
+    api = FakeApi(clock, closed_polls=1, full={"A"}, conflict={"C"})
+    api.held = ["HAD"]
+    plan = make_plan(
+        item("A", "09:00", "10:00", priority=1),
+        item("A2", "09:30", "10:30", role=BACKUP),
+        item("HAD", "11:00", "12:00"),
+        item("C", "13:00", "14:00"),
+    )
+    report = runner_for(api, clock)[0].run(plan, "t", clock.t + 60)
+    assert _steps(report) == [
+        ("skip", "HAD", "skipped"),
+        ("wait", "A", "closed"),
+        ("reserve", "A", "refused"),
+        ("backup", "A2", "reserved"),
+        ("reserve", "C", "refused"),
+    ]
+    assert report.log[-1]["detail"] == "conflicts with a session you already hold"
+    assert report.log[1]["seconds"] == 3  # one poll wait
+    json.dumps(report.to_dict())
+
+
+class ReadOnlyApi:
+    """What a dry run may touch: any other call fails the test."""
+
+    def __init__(self, sessions, reserved=()):
+        self.sessions, self.reserved = sessions, list(reserved)
+
+    def iter_sessions(self, event_id, include_abstracts=True):
+        assert include_abstracts is False
+        return iter(self.sessions)
+
+    def get_schedule(self, event_id):
+        return Schedule(reserved=self.reserved)
+
+
+def live(sid, start, end, seats="available", reservable=True):
+    def minutes(hhmm):
+        return int(hhmm[:2]) * 60 + int(hhmm[3:])
+
+    length = str(minutes(end) - minutes(start))
+    return Session.model_validate(
+        {
+            "sessionId": sid,
+            "title": sid,
+            "sessionTime": {"date": DAY, "time": start, "length": length},
+            "isReservable": reservable,
+            "seatAvailability": seats,
+        }
+    )
+
+
+def test_dry_run_works_out_each_outcome_without_writing_or_emailing():
+    from reinvent_agent.reservation_runner import dry_run
+
+    api = ReadOnlyApi(
+        [
+            live("OK", "08:00", "08:30"),
+            live("FULL", "09:00", "10:00", seats="unavailable"),  # the API's band for full
+            live("BK", "09:00", "10:00"),
+            live("WALK", "11:00", "12:00", seats=None, reservable=False),
+            live("CLASH", "13:00", "14:00"),
+            live("HAD", "13:30", "14:30"),
+        ],
+        reserved=["HAD"],
+    )
+    plan = make_plan(
+        item("OK", "08:00", "08:30"),
+        item("FULL", "09:00", "10:00"),
+        item("BK", "09:00", "10:00", role=BACKUP),
+        item("WALK", "11:00", "12:00"),
+        item("CLASH", "13:00", "14:00"),
+        item("GONE", "15:00", "16:00"),
+    )
+    report = dry_run(api, "ev", plan)
+    assert report.dry_run and report.status == "done"
+    assert _steps(report) == [
+        ("reserve", "OK", "reserved"),
+        ("reserve", "FULL", "refused"),
+        ("backup", "BK", "reserved"),
+        ("reserve", "WALK", "refused"),
+        ("reserve", "CLASH", "refused"),
+        ("reserve", "GONE", "refused"),
+    ]
+    assert {r["code"]: r["seats"] for r in report.log}["FULL"] == "unavailable"
+    assert report.log[1]["detail"] == "full"
+    assert {r["code"]: r["seats"] for r in report.log}["GONE"] == "not in the catalog"
+    assert api.reserved == ["HAD"]
+    assert any("Nothing was reserved" in n for n in report.notes)
+    assert any("isn't approved" in n for n in report.notes)
+    assert report.subject().startswith("re:Invent dry run")
+    assert "dry" not in report.log_text() and "reserve" in report.log_text()
+
+
+def test_dry_run_pretend_full_uses_the_backup():
+    from reinvent_agent.reservation_runner import dry_run
+
+    api = ReadOnlyApi([live("A", "09:00", "10:00"), live("B", "09:00", "10:00")])
+    plan = make_plan(item("A", "09:00", "10:00"), item("B", "09:00", "10:00", role=BACKUP))
+    report = dry_run(api, "ev", plan, pretend_full=["A"])
+    assert _steps(report) == [("reserve", "A", "refused"), ("backup", "B", "reserved")]
+    assert report.log[0]["seats"] == "pretending full"
+
+
+def test_dry_run_simulates_pacing_without_really_waiting():
+    from reinvent_agent.reservation_runner import dry_run
+
+    times = [(f"{9 + i // 6:02d}:{i % 6}0", f"{9 + i // 6:02d}:{i % 6}5") for i in range(35)]
+    ids = [f"S{i}" for i in range(35)]
+    api = ReadOnlyApi([live(s, a, b) for s, (a, b) in zip(ids, times, strict=True)])
+    plan = make_plan(*[item(s, a, b) for s, (a, b) in zip(ids, times, strict=True)])
+    report = dry_run(api, "ev", plan)  # would hang for a minute if the pacing were real
+    assert len(report.reserved) == 35 and report.log[-1]["seconds"] >= 60
+
+
+def test_dry_run_reports_a_failed_sign_in():
+    from reinvent_agent.reservation_runner import dry_run
+
+    class Expired:
+        def iter_sessions(self, event_id, include_abstracts=True):
+            raise RuntimeError("invalid_grant")
+
+    report = dry_run(Expired(), "ev", make_plan(item("A", "09:00", "10:00")))
+    assert report.status == "auth_failed" and "invalid_grant" in report.notes[0]
+
+
+def test_lambda_dry_run_uses_the_plan_and_stays_silent(monkeypatch):
+    from reinvent_agent import lambda_handler
+
+    clock = Clock()
+    api = ReadOnlyApi([live("A", "09:00", "10:00")])
+    runner, notifier = runner_for(api, clock)
+    store = PlanStore(FakeTable(), "u", "ev")
+    store.approve(make_plan(item("A", "09:00", "10:00")))
+    monkeypatch.setattr(lambda_handler, "_deps", lambda: (runner, store, object()))
+    out = lambda_handler.handler({"action": "dry_run"}, None)
+    assert out["ok"] and out["report"]["log"][0]["result"] == "reserved"
+    assert notifier.messages == [] and store.runs() == []
+    assert store.flag("api-run-done") is None
+
+    # No stored sign-in: says so, but doesn't email.
+    monkeypatch.setattr(lambda_handler, "_deps", lambda: (runner, store, None))
+    out = lambda_handler.handler({"action": "dry_run"}, None)
+    assert not out["ok"] and "No sign-in" in out["message"] and notifier.messages == []

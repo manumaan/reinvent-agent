@@ -9,6 +9,7 @@ EventBridge Scheduler invokes it (see ``run_schedule``) with
   the report and marks itself done. Problems are emailed at most once an hour.
 * ``run`` -- reserve now (manual, or to test the cloud path): one probe, no waiting
   unless ``wait_seconds`` is given; always emails the report.
+* ``dry_run`` -- the run's steps with nothing reserved and no email; returns the report.
  Environment: TOKEN_SECRET_ARN, PLANS_TABLE, TOPIC_ARN,
 EVENT_ID. Only the Events API client and the reservation modules are imported here, so
 the deployment package stays small (httpx, pydantic, tzdata; boto3 is in the runtime).
@@ -60,7 +61,7 @@ def handler(event, context):
     try:
         return _handle(action, label, event, context, runner, store, stored)
     except Exception as e:  # anything outside the runner's own handling: still email
-        if action != "poll" or _alert_due(store, runner):
+        if action != "dry_run" and (action != "poll" or _alert_due(store, runner)):
             runner.notifier.notify(
                 f"ERROR: re:Invent reservations ({label})",
                 f"The {action} job failed: {e}. Reserve from the app if the API is open.",
@@ -81,7 +82,7 @@ def _handle(action, label, event, context, runner, store, stored):
 
     if stored is None:
         msg = "No sign-in stored for the unattended run. In the app: Plans -> Enable."
-        if action != "poll" or _alert_due(store, runner):
+        if action != "dry_run" and (action != "poll" or _alert_due(store, runner)):
             runner.notifier.notify(f"ACTION NEEDED: re:Invent reservations ({label})", msg)
         return {"ok": False, "message": msg}
 
@@ -95,6 +96,13 @@ def _handle(action, label, event, context, runner, store, stored):
                 "app (Plans tab) before the run.",
             )
         return {"ok": ok, "message": msg, "plan_version": plan.version if plan else None}
+
+    if action == "dry_run":
+        from reinvent_agent.reservation_runner import dry_run
+
+        plan = store.approved() or store.draft()
+        report = dry_run(runner.client, runner.event_id, plan, event.get("pretend_full", ()))
+        return {"ok": report.status == "done", "status": report.status, "report": report.to_dict()}
 
     if action not in ("poll", "run"):
         raise ValueError(f"unknown action {action!r}")

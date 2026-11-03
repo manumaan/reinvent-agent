@@ -1602,7 +1602,9 @@ def plans_tab(signed_in: bool):
                 )
                 for n in r["notes"]:
                     st.caption(n)
-                if r["reserved"] or r["failed"]:
+                if r.get("log"):
+                    run_log_table(r)
+                elif r["reserved"] or r["failed"]:  # runs from before the step log
                     st.dataframe(
                         [{"": "✅", "code": x["code"], "title": x["title"], "how": x["how"]}
                          for x in r["reserved"]]
@@ -1873,6 +1875,94 @@ def portal_checklist(plan) -> None:
     )
 
 
+LOG_ACTIONS = {
+    "reserve": f"{RES_ICON} reserve",
+    "backup": "↪ backup",
+    "skip": "⏭️ skip",
+    "wait": "⏳ wait",
+}
+
+
+def run_log_table(report: dict) -> None:
+    """Every step of a run, in order: what was tried on which session, and what happened."""
+    results = {
+        "reserved": "✅ would reserve" if report.get("dry_run") else "✅ reserved",
+        "refused": "❌ would be refused" if report.get("dry_run") else "❌ refused",
+        "skipped": "⏭️ skipped",
+        "closed": "🔒 closed",
+    }
+    rows = [
+        {
+            "Time": f"+{r['seconds']}s",
+            "Step": LOG_ACTIONS.get(r["action"], r["action"]),
+            "Session": r["code"],
+            "Title": r["title"],
+            "Result": results.get(r["result"], r["result"]),
+            "Detail": r["detail"],
+            **({"Seats now": SEAT_BANDS.get(r["seats"], r["seats"])} if "seats" in r else {}),
+        }
+        for r in report["log"]
+    ]
+    st.dataframe(rows, hide_index=True, use_container_width=True)
+
+
+def dry_run_section(approved) -> None:
+    from reinvent_agent.reservation_runner import dry_run
+
+    st.markdown("**🧪 Dry run**")
+    plan = approved or accounts.plan_store(cfg).draft()
+    if plan is None or not plan.primaries:
+        return st.caption("Build a plan with at least one 🎟️ reserve session to try a dry run.")
+    which = f"approved plan v{approved.version}" if approved else "draft plan (not approved yet)"
+    st.caption(
+        f"Goes through the run step by step on your {which}, with your real schedule and "
+        "live seats. It reserves nothing and sends no email."
+    )
+    names = {i.session_id: f"{i.code} · {i.title}" for i in plan.items if i.role != "skip"}
+    full = st.multiselect(
+        "Pretend these are full, to see the backups step in",
+        list(names),
+        format_func=names.get,
+        key="dry_full",
+    )
+    c1, c2 = st.columns(2)
+    if c1.button("🧪 Dry run (this computer)", use_container_width=True):
+        try:
+            report = dry_run(accounts.events_client(cfg), cfg.event_id, plan, full)
+            st.session_state["dry_run_report"] = report.to_dict()
+        except Exception as e:
+            st.error(f"Couldn't do the dry run: {e}")
+    if c2.button("🧪 Dry run (cloud)", use_container_width=True,
+                 disabled=not accounts.unattended_enabled(),
+                 help="The same steps in the Lambda; also tests the cloud sign-in."):  # fmt: skip
+        try:
+            result = accounts.invoke_cloud("dry_run", "dry run", cfg, pretend_full=full)
+            if "report" in result:
+                st.session_state["dry_run_report"] = result["report"]
+            else:
+                st.error(f"Couldn't do the dry run: {result.get('message', result)}")
+        except Exception as e:
+            if "unknown action" in str(e):
+                st.warning(
+                    "Redeploy to dry-run in the cloud: `cd infra && npx aws-cdk@2 deploy --all`."
+                )
+            else:
+                st.error(f"Couldn't do the dry run: {e}")
+    report = st.session_state.get("dry_run_report")
+    if report:
+        kept, refused = len(report["reserved"]), len(report["failed"])
+        if report["status"] != "done":
+            st.error(f"Dry run stopped: {report['status'].replace('_', ' ')}.")
+        else:
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Reserved or already held", kept)
+            d2.metric("Not reserved", refused)
+            d3.metric("Steps", len(report["log"]))
+        run_log_table(report)
+        for n in report["notes"]:
+            st.caption(n)
+
+
 def unattended_section(approved) -> None:
     st.markdown(
         "The cloud job signs in with a copy of your Builder ID tokens (Secrets Manager) and "
@@ -1910,6 +2000,8 @@ def unattended_section(approved) -> None:
     if e2.button("Subscribe", use_container_width=True, disabled="@" not in email):
         accounts.subscribe(email.strip(), cfg)
         set_flash(("success", f"Subscribed {email}. Click the confirmation link AWS emailed you."))
+
+    dry_run_section(approved)
 
     st.markdown("**Test now**")
     t1, t2, t3 = st.columns(3)

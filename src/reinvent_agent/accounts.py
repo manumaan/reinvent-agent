@@ -144,7 +144,7 @@ def scheduler_client(cfg: Settings | None = None):
 
 
 def invoke_cloud(
-    action: str, label: str, cfg: Settings | None = None, wait_seconds: int = 0
+    action: str, label: str, cfg: Settings | None = None, wait_seconds: int = 0, **extra
 ) -> dict:
     """Run the deployed Lambda now (e.g. a preflight to test sign-in + email)."""
     import boto3
@@ -155,7 +155,7 @@ def invoke_cloud(
     resp = boto3.client("lambda", region_name=cfg.region).invoke(
         FunctionName=cfg.reservation_function,
         Payload=json.dumps(
-            {"action": action, "label": label, "wait_seconds": wait_seconds}
+            {"action": action, "label": label, "wait_seconds": wait_seconds, **extra}
         ).encode(),
     )
     body = json.loads(resp["Payload"].read() or b"null")

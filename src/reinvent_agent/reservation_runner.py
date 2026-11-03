@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
 
 from reinvent_agent.events_api.client import OperationClosedError
-from reinvent_agent.events_api.models import BulkResult
+from reinvent_agent.events_api.models import BulkResult, Schedule
 from reinvent_agent.reservation_plan import PlanItem, ReservationPlan
 
 MAX_BATCH = 10
@@ -34,6 +34,7 @@ FAILURE_TEXT = {
     "timePassed": "already happened",
     "unknown": "outcome unknown after retries",
 }
+RESERVED, REFUSED, SKIPPED, CLOSED = "reserved", "refused", "skipped", "closed"  # log results
 
 
 class Notifier:
@@ -72,11 +73,19 @@ class RunReport:
     reserved: list[dict] = field(default_factory=list)  # {code, title, how}
     failed: list[dict] = field(default_factory=list)  # {code, title, reason}
     notes: list[str] = field(default_factory=list)
+    # Every step, in order: {seconds, action, session_id, code, title, result, detail}
+    log: list[dict] = field(default_factory=list)
+    dry_run: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def subject(self) -> str:
+        if self.dry_run:
+            if self.status != "done":
+                return f"re:Invent dry run: {self.status.replace('_', ' ')}"
+            counts = f"{len(self.reserved)} reserved or kept, {len(self.failed)} not"
+            return f"re:Invent dry run: {counts}"
         if self.status == "done":
             counts = f"{len(self.reserved)} reserved"
             if self.failed:
@@ -96,6 +105,12 @@ class RunReport:
                 f"  {f['code']}  {f['title']}  - {f['reason']}" for f in self.failed
             ]
         return "\n".join(lines)
+
+    def log_text(self) -> str:
+        return "\n".join(
+            f"+{r['seconds']:>3}s  {r['action']:<8} {r['code']:<12} {r['result']:<9} {r['detail']}"
+            for r in self.log
+        )
 
 
 class RateLimiter:
@@ -202,6 +217,7 @@ class ReservationRunner:
         for p in plan.primaries:
             if p.session_id in held:
                 self._ok(p, "already reserved")
+                self._log("skip", p, SKIPPED, "already reserved")
         # Keep a backup reserved in an earlier phase rather than risk losing both.
         queue = [p for p in queue if not self._covered_by_backup(p)]
         if not queue:
@@ -231,16 +247,23 @@ class ReservationRunner:
         for b in self.plan.backups_for(primary.session_id):
             if b.session_id in self.held:
                 self._ok(b, f"backup for {primary.code}, reserved earlier")
+                self._log("skip", primary, SKIPPED, f"you already hold its backup {b.code}")
                 return True
         return False
 
     def _probe_until_open(self, item: PlanItem, deadline: float):
+        tries = 0
         while True:
             self.limiter.acquire(1)
             try:
-                return self.client.reserve_sessions(self.event_id, [item.session_id])
+                result = self.client.reserve_sessions(self.event_id, [item.session_id])
+                if tries:
+                    self._log("wait", item, CLOSED, f"closed for {tries} tries, now open")
+                return result
             except OperationClosedError:
+                tries += 1
                 if self.clock() >= deadline:
+                    self._log("wait", item, CLOSED, f"still closed after {tries} tries")
                     return None
                 self.sleep(self.poll_seconds)
             except Exception as e:  # open, but this response was lost: reconcile
@@ -278,13 +301,15 @@ class ReservationRunner:
             self.tried.add(item.session_id)
             if item.session_id in self.held:
                 self._ok(item, "reserved")
+                self._log("reserve", item, RESERVED)
                 continue
             code = codes.get(item.session_id, "unknown")
             if code == "alreadyScheduled":
                 self._ok(item, "already reserved")
-            elif code in TRY_BACKUP and self._try_backups(item, code):
+                self._log("skip", item, SKIPPED, "already reserved")
                 continue
-            else:
+            self._log("reserve", item, REFUSED, FAILURE_TEXT.get(code, code))
+            if not (code in TRY_BACKUP and self._try_backups(item, code)):
                 self._fail(item, code)
 
     def _try_backups(self, primary: PlanItem, why: str) -> bool:
@@ -292,13 +317,18 @@ class ReservationRunner:
             if b.session_id in self.tried or b.session_id in self.held:
                 continue
             if self._clashes_with_held(b, primary):
+                self._log("backup", b, SKIPPED, f"for {primary.code}: clashes with what you hold")
                 continue
             self.tried.add(b.session_id)
-            self._send([b])
+            result = self._send([b])
             self.held = self._schedule()
             if b.session_id in self.held:
                 self._ok(b, f"backup for {primary.code} ({FAILURE_TEXT.get(why, why)})")
+                self._log("backup", b, RESERVED, f"for {primary.code}")
                 return True
+            failed = result.failed if result else []
+            code = next((f.code for f in failed if f.session_id == b.session_id), "unknown")
+            self._log("backup", b, REFUSED, f"for {primary.code}: {FAILURE_TEXT.get(code, code)}")
         return False
 
     def _clashes_with_held(self, backup: PlanItem, replacing: PlanItem) -> bool:
@@ -312,6 +342,19 @@ class ReservationRunner:
             ):
                 return True
         return False
+
+    def _log(self, action: str, item: PlanItem, result: str, detail: str = "") -> None:
+        self.report.log.append(
+            {
+                "seconds": round(self.clock() - self.report.started_at),
+                "action": action,
+                "session_id": item.session_id,
+                "code": item.code,
+                "title": item.title,
+                "result": result,
+                "detail": detail,
+            }
+        )
 
     def _ok(self, item: PlanItem, how: str) -> None:
         if any(r["session_id"] == item.session_id for r in self.report.reserved):
@@ -332,3 +375,106 @@ class ReservationRunner:
                 "reason": reason,
             }
         )
+
+
+# --- dry run -------------------------------------------------------------------
+
+
+class DryRunClient:
+    """Stands in for the Events API in a dry run: reads are real, reserving is worked out.
+
+    ``reserve_sessions`` answers as the API would from your real schedule and live seats.
+    Only the calls the runner needs exist here, so a dry run has no way to change anything.
+    """
+
+    def __init__(self, client, event_id: str, pretend_full: Iterable[str] = ()):
+        self.pretend_full = set(pretend_full)
+        self.sessions = {
+            s.session_id: s for s in client.iter_sessions(event_id, include_abstracts=False)
+        }
+        self.real = list(client.get_schedule(event_id).reserved)
+        self.added: list[str] = []
+
+    def get_schedule(self, event_id: str) -> Schedule:
+        return Schedule(reserved=[*self.real, *self.added])
+
+    def reserve_sessions(self, event_id: str, session_ids: Iterable[str]) -> BulkResult:
+        ok, failed = [], []
+        for sid in session_ids:
+            code = self._refusal(sid)
+            if code:
+                failed.append({"sessionId": sid, "code": code})
+            else:
+                self.added.append(sid)
+                ok.append(sid)
+        return BulkResult.model_validate({"successful": ok, "failed": failed})
+
+    def _refusal(self, sid: str) -> str | None:
+        if sid in [*self.real, *self.added]:
+            return "alreadyScheduled"
+        if sid in self.pretend_full:
+            return "sessionFull"
+        s = self.sessions.get(sid)
+        if s is None:
+            return "sessionNotReservable"  # withdrawn since the plan was built
+        if self._overlaps_held(s):
+            return "scheduleConflict"
+        if not s.is_reservable or s.seat_availability == "walkUp":
+            return "sessionNotReservable"
+        return "sessionFull" if s.seat_availability == "unavailable" else None
+
+    def _overlaps_held(self, s) -> bool:
+        for sid in [*self.real, *self.added]:
+            h = self.sessions.get(sid)
+            if not (h and s.start and s.end and h.start and h.end):
+                continue
+            if s.start < h.end and h.start < s.end:
+                return True
+        return False
+
+    def seats(self, sid: str) -> str:
+        """What the seat data said for this session, for the log."""
+        if sid in self.pretend_full:
+            return "pretending full"
+        s = self.sessions.get(sid)
+        if s is None:
+            return "not in the catalog"
+        return s.seat_availability or ("reservable" if s.is_reservable else "no reserved seating")
+
+
+def dry_run(
+    client, event_id: str, plan: ReservationPlan | None, pretend_full: Iterable[str] = ()
+) -> RunReport:
+    """The real run's steps, with no reservations and no email. Pacing is simulated, so
+    it finishes at once and the log's times show how a real run would be spaced out."""
+
+    class Clock:
+        now = time.time()
+
+        def __call__(self) -> float:
+            return self.now
+
+        def sleep(self, seconds: float) -> None:
+            self.now += seconds
+
+    clock = Clock()
+    label = "dry run"
+    try:
+        sim = DryRunClient(client, event_id, pretend_full)
+    except Exception as e:
+        report = RunReport(label, clock(), "auth_failed", clock(), dry_run=True)
+        report.notes.append(f"Could not read your schedule and seats (sign-in?): {e}")
+        return report
+    runner = ReservationRunner(sim, event_id, ListNotifier(), clock=clock, sleep=clock.sleep)
+    report = runner.run(plan, label, clock())
+    report.dry_run = True
+    for row in report.log:
+        row["seats"] = sim.seats(row["session_id"])
+    if plan and not plan.approved_at:
+        report.notes.append("This plan isn't approved: a real run would stop until it is.")
+    report.notes += [
+        "Nothing was reserved and no email was sent.",
+        "Seats are as of now: a real run gets what's left when it runs, and waits if "
+        "reservations are closed.",
+    ]
+    return report
