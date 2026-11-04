@@ -1614,7 +1614,7 @@ def live_run_status(pstore, tz: str) -> None:
         )
     else:
         st.caption(
-            f"🕓 Not scheduled yet. **Schedule run** would run it on **{chosen}**, "
+            f"🕓 :red[**Not scheduled yet.**] **Schedule run** would run it on **{chosen}**, "
             f"{time_until(when - now)} from now."
         )
     for kind, text in st.session_state.pop("cancel_flash", []):
@@ -2035,6 +2035,8 @@ def dry_run_section(approved, pstore) -> None:
                  disabled=busy or not accounts.unattended_enabled(),
                  help="The same steps in the Lambda; also tests the cloud sign-in."):  # fmt: skip
         start_dry_run(pstore, plan, full, "cloud")
+    if not accounts.unattended_enabled():
+        c2.caption("Turn on the unattended run (above) to use this.")
     job = st.session_state.get("dry_run_job")
     st.fragment(dry_run_result, run_every=2 if job and "finished" not in job else None)()
 

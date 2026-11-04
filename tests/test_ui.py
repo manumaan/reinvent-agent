@@ -354,6 +354,27 @@ def test_pending_email_says_to_go_confirm_it(monkeypatch, tmp_path):
         st.cache_resource.clear()
 
 
+def test_cloud_dry_run_says_why_it_is_disabled(monkeypatch, tmp_path):
+    import streamlit as st
+
+    from reinvent_agent import accounts
+
+    note = "Turn on the unattended run"
+    at, _ = _plans_with_a_run(monkeypatch, tmp_path)
+    at = at.run()
+    try:
+        assert not any(note in c.value for c in at.caption)  # on: enabled, nothing to explain
+        monkeypatch.setattr(accounts, "unattended_enabled", lambda: False)
+        at = at.run()
+        assert not at.exception
+        assert next(b for b in at.button if b.label == "🧪 Dry run (cloud)").disabled
+        assert any(note in c.value for c in at.caption)
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+
 def test_plans_tab_no_longer_has_the_portal_checklist(monkeypatch, tmp_path):
     from pathlib import Path
 
