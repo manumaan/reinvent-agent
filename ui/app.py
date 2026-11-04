@@ -8,12 +8,14 @@ localhost (ports 8484-8489), so the app signs you in itself.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import Counter
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import date, timedelta
+from pathlib import Path
 
 import streamlit as st
 
@@ -37,6 +39,11 @@ from reinvent_agent.schedule import MySchedule
 from reinvent_agent.venue_maps import CAMPUS, VENUE_MAPS, map_url
 
 FAV_ICON, RES_ICON, NO_RES_ICON = "⭐", "🎟️", "🚫"
+
+# Streamlit only reloads changed modules next to this script or on PYTHONPATH. Without
+# this, editing src/ leaves the old code in memory until a restart, and it clashes with
+# this file's new code.
+os.environ["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent / "src")
 
 st.set_page_config(page_title="re:Invent planner", page_icon="🗓️", layout="wide")
 cfg = settings()
@@ -1508,6 +1515,7 @@ def time_until(delta) -> str:
     return f"{hours // 24} days"
 
 
+SCHEDULE_MESSAGE_SECONDS = 60
 RUN_LASTS_AT_MOST = 960  # a Lambda lives 15 minutes; past that, "running" means it died
 
 
@@ -1556,23 +1564,27 @@ def scheduled_runs(approved, pstore) -> None:
     if clicked:
         try:
             if when < now + MIN_LEAD:
-                st.warning(
+                schedule_message(
+                    "warning",
                     f"Not scheduled: {chosen} is too soon or already past. "
-                    f"It's {now:%-I:%M %p} now; choose a time at least 2 minutes ahead."
+                    f"It's {now:%-I:%M %p} now; choose a time at least 2 minutes ahead.",
                 )
             else:
                 schedule_run(
                     when, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn,
                     accounts.scheduler_client(cfg),
                 )  # fmt: skip
-                st.success(f"Scheduled the run for {chosen}.")
+                st.session_state["last_scheduled"] = when
+                schedule_message("success", f"Scheduled the run for {chosen}.")
         except ValueError as e:
-            st.warning(f"Couldn't schedule the run: {e}")
+            schedule_message("warning", f"Couldn't schedule the run: {e}")
         except Exception as e:
             if "Conflict" in type(e).__name__:
-                st.warning("Couldn't schedule the run: one is already set for then.")
+                schedule_message(
+                    "warning", "Couldn't schedule the run: one is already set for then."
+                )
             else:
-                st.error(f"Couldn't schedule the run: {e}")
+                schedule_message("error", f"Couldn't schedule the run: {e}")
     if missing:
         st.caption("To schedule a run: " + " and ".join(missing) + ".")
     live_run_status(pstore, tz)
@@ -1583,15 +1595,20 @@ def scheduled_runs(approved, pstore) -> None:
     )
 
 
-def cancel_scheduled_run(stamp: str) -> None:
+def schedule_message(kind: str, text: str) -> None:
+    """The latest result of scheduling or cancelling; each one replaces the one before."""
+    st.session_state["schedule_message"] = (kind, text, time.time())
+
+
+def cancel_scheduled_run(stamp: str, name: str) -> None:
     """A button callback: runs before the status below is redrawn, so it's gone at once."""
     from reinvent_agent.run_schedule import cancel_run
 
     try:
         cancel_run(stamp, accounts.scheduler_client(cfg))
-        st.session_state["cancel_flash"] = [("success", "Cancelled the scheduled run.")]
+        schedule_message("success", f"Cancelled the scheduled run for {name}.")
     except Exception as e:
-        st.session_state["cancel_flash"] = [("error", f"Couldn't cancel the run: {e}")]
+        schedule_message("error", f"Couldn't cancel the run for {name}: {e}")
 
 
 @st.fragment(run_every=10)
@@ -1606,25 +1623,31 @@ def live_run_status(pstore, tz: str) -> None:
     when = datetime.combine(
         st.session_state["run_date"], st.session_state["run_time"], tzinfo=ZoneInfo(tz)
     )
-    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
-    if when < now + MIN_LEAD:
-        st.warning(
-            f"The time you've picked, {chosen}, is too soon or already past. It's "
-            f"{now:%-I:%M %p} now: choose a time at least 2 minutes ahead."
-        )
-    else:
-        st.caption(
-            f"🕓 :red[**Not scheduled yet.**] **Schedule run** would run it on **{chosen}**, "
-            f"{time_until(when - now)} from now."
-        )
-    for kind, text in st.session_state.pop("cancel_flash", []):
-        getattr(st, kind)(text)
+    if message := st.session_state.get("schedule_message"):
+        kind, text, at = message
+        if time.time() - at < SCHEDULE_MESSAGE_SECONDS:  # outlives the 10-second refresh
+            getattr(st, kind)(text)
     client = accounts.scheduler_client(cfg)
     try:
         runs = list_runs(client)
         history = pstore.runs(3)
     except Exception as e:
         return st.error(f"Couldn't read scheduled runs: {e}")
+    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
+    if any(r.when == when for r in runs):
+        pass  # already scheduled: listed below
+    elif when >= now + MIN_LEAD:
+        lead = (
+            "➕ **Schedule run** would add another run on"
+            if runs
+            else ("🕓 :red[**Not scheduled yet.**] **Schedule run** would run it on")
+        )
+        st.caption(f"{lead} **{chosen}**, {time_until(when - now)} from now.")
+    elif when != st.session_state.get("last_scheduled"):  # else: that run has fired
+        st.warning(
+            f"The time you've picked, {chosen}, is too soon or already past. It's "
+            f"{now:%-I:%M %p} now: choose a time at least 2 minutes ahead."
+        )
     recent = [r for r in history if not r.get("dry_run")]
     live = next((r for r in recent if run_is_live(r)), None)
     if live:
@@ -1646,14 +1669,14 @@ def live_run_status(pstore, tz: str) -> None:
         if left.total_seconds() <= 0 and live:
             continue  # it fired: shown as running above
         c1, c2 = st.columns([4, 1])
-        name = f"**{local:%a %b %-d %Y, %-I:%M %p %Z}**"
+        name = f"{local:%a %b %-d %Y, %-I:%M %p %Z}"
         if left.total_seconds() > 0:
             check = " · sign-in check 30 min before" if r.has_check else ""
-            c1.markdown(f"🗓️ Scheduled for {name} · starts in {time_until(left)}{check}")
+            c1.markdown(f"🗓️ Scheduled for **{name}** · starts in {time_until(left)}{check}")
         else:
-            c1.markdown(f"⏳ Scheduled for {name} · starting now (AWS can take up to a minute)")
+            c1.markdown(f"⏳ Scheduled for **{name}** · starting now (AWS can take up to a minute)")
         c2.button("✖ Cancel", key=f"cancel_run_{r.stamp}", use_container_width=True,
-                  on_click=cancel_scheduled_run, args=(r.stamp,))  # fmt: skip
+                  on_click=cancel_scheduled_run, args=(r.stamp, name))  # fmt: skip
 
 
 @st.fragment(run_every=10)
@@ -1977,6 +2000,7 @@ def start_dry_run(pstore, plan, full: list[str], where: str) -> None:
     from reinvent_agent.reservation_runner import dry_run
 
     job = {"where": where, "started": time.time()}
+    tz = viewer_tz()  # the thread below can't ask Streamlit
     st.session_state["dry_run_job"] = job
 
     def work() -> None:
@@ -1984,7 +2008,7 @@ def start_dry_run(pstore, plan, full: list[str], where: str) -> None:
             if where == "cloud":
                 result = accounts.invoke_cloud(
                     "dry_run", "dry run (cloud)", cfg, pretend_full=full,
-                    email=accounts.has_confirmed_email(cfg),
+                    email=accounts.has_confirmed_email(cfg), tz=tz,
                 )  # fmt: skip
                 if "report" in result:
                     job["report"] = result["report"]
@@ -1993,7 +2017,7 @@ def start_dry_run(pstore, plan, full: list[str], where: str) -> None:
             else:
                 report = dry_run(
                     accounts.events_client(cfg), cfg.event_id, plan, full,
-                    accounts.notifier(cfg), "dry run (this computer)",
+                    accounts.notifier(cfg), "dry run (this computer)", tz,
                 ).to_dict()  # fmt: skip
                 pstore.save_run(report)
                 job["report"] = report
@@ -2172,7 +2196,7 @@ def test_now(approved, pstore) -> None:
     if t1.button("Run the cloud check now", use_container_width=True, help=check_help):
         with st.spinner("Asking the cloud job to check…"):
             try:
-                result = accounts.invoke_cloud("preflight", "manual check", cfg)
+                result = accounts.invoke_cloud("preflight", "manual check", cfg, tz=viewer_tz())
                 show = st.success if result.get("ok") else st.error
                 show(result.get("message", str(result)))
             except Exception as e:
@@ -2185,7 +2209,7 @@ def test_now(approved, pstore) -> None:
                  disabled=approved is None, help=run_help):  # fmt: skip
         with st.spinner("Reserving in the cloud…"):
             try:
-                result = accounts.invoke_cloud("run", "cloud run", cfg)
+                result = accounts.invoke_cloud("run", "cloud run", cfg, tz=viewer_tz())
                 st.info(f"Cloud run finished: {result.get('status')}. See Run history.")
                 my_schedule().refresh()
             except Exception as e:
@@ -2196,7 +2220,7 @@ def test_now(approved, pstore) -> None:
         from reinvent_agent.reservation_runner import ReservationRunner
 
         with st.spinner("Reserving…"):
-            runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id)
+            runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id, tz=viewer_tz())
             report = runner.run(pstore.approved(), "manual", time.time(), on_start=pstore.save_run)
             pstore.save_run(report.to_dict())
             my_schedule().refresh()

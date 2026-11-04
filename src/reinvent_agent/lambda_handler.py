@@ -103,8 +103,9 @@ def _handle(action, label, event, context, runner, store, stored):
         plan = store.approved() or store.draft()
         notifier = runner.notifier if event.get("email", True) else None
         report = dry_run(
-            runner.client, runner.event_id, plan, event.get("pretend_full", ()), notifier, label
-        )
+            runner.client, runner.event_id, plan, event.get("pretend_full", ()), notifier, label,
+            event.get("tz"),
+        )  # fmt: skip
         store.save_run(report.to_dict())
         return {"ok": report.status == "done", "status": report.status, "report": report.to_dict()}
 
@@ -123,7 +124,11 @@ def _handle(action, label, event, context, runner, store, stored):
     try:
         with lease():
             on_start = store.save_run if action == "run" else None  # poll: silent while closed
-            report = runner.run(store.approved(), label, deadline, quiet=quiet, on_start=on_start)
+            runner.tz = event.get("tz")
+            report = runner.run(
+                store.approved(), label, deadline, quiet=quiet, on_start=on_start,
+                scheduled_for=event.get("scheduled_for"),
+            )  # fmt: skip
             if action == "run" or report.status != "closed":
                 store.save_run(report.to_dict())
     except LeaseBusy:

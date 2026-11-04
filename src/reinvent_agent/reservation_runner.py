@@ -18,6 +18,8 @@ from collections import deque
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from reinvent_agent.events_api.client import EventsApiError, OperationClosedError
 from reinvent_agent.events_api.models import BulkResult, Schedule
@@ -36,6 +38,16 @@ FAILURE_TEXT = {
     "unknown": "outcome unknown after retries",
 }
 RESERVED, REFUSED, SKIPPED, CLOSED = "reserved", "refused", "skipped", "closed"  # log results
+
+
+def _local_time(when: datetime | float, tz: str | None) -> datetime:
+    """In ``tz`` when given and valid, else this machine's zone (a Lambda's is UTC)."""
+    if not isinstance(when, datetime):
+        when = datetime.fromtimestamp(when).astimezone()
+    try:
+        return when.astimezone(ZoneInfo(tz)) if tz else when.astimezone()
+    except (KeyError, ValueError):
+        return when.astimezone()
 
 
 class Notifier:
@@ -77,25 +89,38 @@ class RunReport:
     # Every step, in order: {seconds, action, session_id, code, title, result, detail}
     log: list[dict] = field(default_factory=list)
     dry_run: bool = False
+    tz: str | None = None  # the attendee's timezone, for the times in the email
+    scheduled_for: str | None = None  # ISO time the run was scheduled for
 
     def to_dict(self) -> dict:
         return asdict(self)
 
+    def _time(self, when: datetime | float, fmt: str = "%a %b %-d %Y, %-I:%M:%S %p %Z") -> str:
+        return _local_time(when, self.tz).strftime(fmt)
+
     def subject(self) -> str:
+        """Says which run this is: SNS keeps only the first 100 characters."""
+        at = self._time(self.started_at, "%b %-d %-I:%M %p %Z")
         if self.dry_run:
             if self.status != "done":
-                return f"DRY RUN, nothing reserved: re:Invent, {self.status.replace('_', ' ')}"
+                return f"DRY RUN, nothing reserved ({at}): {self.status.replace('_', ' ')}"
             counts = f"{len(self.reserved)} would be reserved or kept, {len(self.failed)} not"
-            return f"DRY RUN, nothing reserved: re:Invent, {counts}"
+            return f"DRY RUN, nothing reserved ({at}): {counts}"
         if self.status == "done":
             counts = f"{len(self.reserved)} reserved"
             if self.failed:
                 counts += f", {len(self.failed)} not"
-            return f"re:Invent reservations ({self.label}): {counts}"
-        return f"re:Invent reservations ({self.label}): {self.status.replace('_', ' ')}"
+            return f"re:Invent reservations ({self.label}, {at}): {counts}"
+        return f"re:Invent reservations ({self.label}, {at}): {self.status.replace('_', ' ')}"
 
     def text(self) -> str:
-        lines = [self.subject(), ""]
+        lines = [self.subject(), "", f"Run: {self.label}"]
+        if self.scheduled_for:
+            lines.append(f"Scheduled for: {self._time(datetime.fromisoformat(self.scheduled_for))}")
+        lines.append(f"Started: {self._time(self.started_at)}")
+        if self.finished_at:
+            lines.append(f"Finished: {self._time(self.finished_at)}")
+        lines.append("")
         lines.append(
             "This was a DRY RUN: nothing was reserved."
             if self.dry_run
@@ -158,8 +183,9 @@ class ReservationRunner:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
         poll_seconds: float = POLL_SECONDS,
+        tz: str | None = None,
     ):
-        self.client, self.event_id = client, event_id
+        self.client, self.event_id, self.tz = client, event_id, tz
         self.notifier = notifier or ListNotifier()
         self.clock, self.sleep, self.poll_seconds = clock, sleep, poll_seconds
         self.limiter = RateLimiter(clock, sleep)
@@ -197,6 +223,7 @@ class ReservationRunner:
         open_deadline: float,
         quiet: Iterable[str] = (),
         on_start: Callable[[dict], None] | None = None,
+        scheduled_for: str | None = None,
     ) -> RunReport:
         """Reserve ``plan``; wait for seats to release until ``open_deadline`` (epoch).
 
@@ -204,7 +231,9 @@ class ReservationRunner:
         the API is closed and rate-limits its own alerts). ``on_start``: gets the report
         as soon as the run begins, so the run history shows it right away.
         """
-        report = RunReport(label=label, started_at=self.clock())
+        report = RunReport(
+            label=label, started_at=self.clock(), tz=self.tz, scheduled_for=scheduled_for
+        )
         if on_start:
             try:
                 on_start(report.to_dict())
@@ -499,6 +528,7 @@ def dry_run(
     pretend_full: Iterable[str] = (),
     notifier: Notifier | None = None,
     label: str = "dry run",
+    tz: str | None = None,
 ) -> RunReport:
     """The real run's steps with no reservations, then emails the full log to ``notifier``.
     Pacing is simulated, so it finishes at once and the log's times show how a real run
@@ -517,11 +547,11 @@ def dry_run(
     try:
         sim = DryRunClient(client, event_id, plan, pretend_full)
     except Exception as e:
-        report = RunReport(label, clock(), "auth_failed", clock(), dry_run=True)
+        report = RunReport(label, clock(), "auth_failed", clock(), dry_run=True, tz=tz)
         report.notes.append(f"Could not read your schedule and seats (sign-in?): {e}")
         _email_log(report, notifier)
         return report
-    runner = ReservationRunner(sim, event_id, ListNotifier(), clock=clock, sleep=clock.sleep)
+    runner = ReservationRunner(sim, event_id, ListNotifier(), clock=clock, sleep=clock.sleep, tz=tz)
     report = runner.run(plan, label, clock())
     report.dry_run = True
     for row in report.log:

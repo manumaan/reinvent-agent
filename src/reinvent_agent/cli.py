@@ -603,9 +603,7 @@ def reserve_dry_run(
     if cloud:
         from reinvent_agent.accounts import invoke_cloud
 
-        result = invoke_cloud(
-            "dry_run", "dry run", pretend_full=full, email=has_confirmed_email()
-        )
+        result = invoke_cloud("dry_run", "dry run", pretend_full=full, email=has_confirmed_email())
         if "report" not in result:
             typer.echo(result.get("message", result))
             raise typer.Exit(1)

@@ -67,6 +67,7 @@ def test_every_cleared_cache_is_a_cached_function():
 def test_schedule_and_cancel_a_run_from_the_plans_tab(monkeypatch, tmp_path):
     import time
     from datetime import date, timedelta
+    from datetime import time as time_of_day
     from pathlib import Path
 
     import streamlit as st
@@ -111,16 +112,28 @@ def test_schedule_and_cancel_a_run_from_the_plans_tab(monkeypatch, tmp_path):
         at = AppTest.from_file(str(app_file), default_timeout=30).run()
         assert not at.exception
         at.date_input(key="run_date").set_value(date.today() + timedelta(days=7))
+        at.time_input(key="run_time").set_value(time_of_day(8, 0))
         next(b for b in at.button if b.label == "⏰ Schedule run").click()
         at = at.run()
         assert not at.exception
         assert any(n.startswith(PREFIX) and n.endswith("-run") for n in scheduler.items)
         assert any("Scheduled the run for" in s.value for s in at.success)
         assert any("starts in" in m.value for m in at.markdown)
+        assert not any("Not scheduled yet" in c.value for c in at.caption)  # it is scheduled
+
+        # A different time in the box while that run is scheduled: "another", not "not yet".
+        at.time_input(key="run_time").set_value(time_of_day(9, 30))
+        at = at.run()
+        assert any("add another run" in c.value and "9:30 AM" in c.value for c in at.caption)
+        assert not any("Not scheduled yet" in c.value for c in at.caption)
         next(b for b in at.button if b.label == "✖ Cancel").click()
         at = at.run()
         assert not at.exception and scheduler.items == {}
-        assert any("Cancelled the scheduled run" in s.value for s in at.success)
+        assert any("Cancelled the scheduled run for" in s.value for s in at.success)
+        assert not any("Scheduled the run for" in s.value for s in at.success)  # replaced
+        at = at.run()  # still there after the status refreshes itself
+        assert any("Cancelled the scheduled run for" in s.value for s in at.success)
+        assert any("Not scheduled yet" in c.value for c in at.caption)  # cancelled: back again
     finally:
         config.settings.cache_clear()
         st.cache_data.clear()

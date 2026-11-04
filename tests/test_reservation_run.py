@@ -109,7 +109,8 @@ def test_waits_for_release_then_reserves_in_priority_order():
     assert api.calls[0][1] == ["MUST"] and len(api.calls) == 5  # 3 closed probes + 1 + batch
     assert api.calls[-1][1] == ["WANT", "LOW"]
     assert [r["code"] for r in report.reserved] == ["MUST", "WANT", "LOW"]
-    assert notifier.messages[-1][0] == "re:Invent reservations (first release): 3 reserved"
+    assert notifier.messages[-1][0].startswith("re:Invent reservations (first release, ")
+    assert notifier.messages[-1][0].endswith("): 3 reserved")
 
 
 def test_full_session_falls_back_to_best_overlapping_backup():
@@ -554,7 +555,7 @@ def test_dry_run_works_out_each_outcome_without_writing_or_emailing():
     assert "DRY RUN: nothing was reserved" in report.text()
     assert any("wasn't emailed" in n for n in report.notes)  # no notifier
     assert any("isn't approved" in n for n in report.notes)
-    assert report.subject().startswith("DRY RUN, nothing reserved:")
+    assert report.subject().startswith("DRY RUN, nothing reserved (")
     assert "would be refused" in report.log_text() and "seats now: unavailable" in report.log_text()
 
 
@@ -586,7 +587,7 @@ def test_dry_run_emails_the_full_log():
     plan = make_plan(item("A", "09:00", "10:00"), item("B", "09:00", "10:00", role=BACKUP))
     notifier = ListNotifier()
     report = dry_run(api, "ev", plan, ["A"], notifier)
-    (subject, body), = notifier.messages
+    ((subject, body),) = notifier.messages
     assert subject.startswith("DRY RUN") and body.count("DRY RUN") == 2
     assert "Full log:" in body and "Would reserve" in body
     assert "reserve  A" in body and "would be refused" in body
@@ -700,3 +701,49 @@ def test_lambda_run_is_in_history_from_the_start_and_keeps_a_closed_result(monke
     out = lambda_handler.handler({"action": "run", "label": "scheduled run"}, None)
     assert out["status"] == "closed" and saves == ["running", "closed"]
     assert [r["status"] for r in store.runs()] == ["closed"]  # one entry, not two
+
+
+def test_email_says_which_run_it_was_in_your_timezone():
+    from datetime import UTC, datetime
+
+    started = datetime(2026, 11, 4, 7, 39, 5, tzinfo=UTC).timestamp()  # 1:09:05 PM in India
+    report = ReservationRunner(FakeApi(Clock()), "ev", tz="Asia/Kolkata").run(
+        None, "scheduled run", 0, scheduled_for="2026-11-04T13:09:00+05:30"
+    )
+    report.started_at, report.finished_at = started, started + 6
+    report.status = "done"
+    report.reserved = [{"code": "A", "title": "T", "how": "reserved"}]
+    assert report.subject() == (
+        "re:Invent reservations (scheduled run, Nov 4 1:09 PM IST): 1 reserved"
+    )
+    body = report.text()
+    assert "Run: scheduled run" in body
+    assert "Scheduled for: Wed Nov 4 2026, 1:09:00 PM IST" in body
+    assert "Started: Wed Nov 4 2026, 1:09:05 PM IST" in body
+    assert "Finished: Wed Nov 4 2026, 1:09:11 PM IST" in body
+
+    report.dry_run = True
+    assert report.subject().startswith("DRY RUN, nothing reserved (Nov 4 1:09 PM IST):")
+    assert len(report.subject()) <= 100  # SNS cuts the subject there
+    report.tz = "Not/AZone"
+    assert "Started:" in report.text()  # an unknown timezone doesn't break the email
+
+
+def test_scheduled_run_carries_its_time_and_timezone():
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from reinvent_agent.run_schedule import schedule_run
+    from tests.test_run_schedule import FakeScheduler
+
+    now = datetime(2026, 11, 4, 0, 0, tzinfo=UTC)
+    when = (now + timedelta(hours=2)).astimezone(ZoneInfo("Asia/Kolkata"))
+    client = FakeScheduler()
+    schedule_run(when, "Asia/Kolkata", "arn:fn", "arn:role", client, now=now)
+    payloads = {
+        name.rsplit("-", 1)[1]: json.loads(item["Target"]["Input"])
+        for name, item in client.items.items()
+    }
+    assert payloads["run"]["tz"] == "Asia/Kolkata"
+    assert datetime.fromisoformat(payloads["run"]["scheduled_for"]) == when
+    assert payloads["check"]["label"] == "check before the run at Nov 4 7:30 AM IST"

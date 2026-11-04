@@ -53,9 +53,12 @@ def schedule_run(
         raise ValueError("Choose a time at least 2 minutes from now.")
     stamp = when.astimezone(UTC).strftime("%Y%m%dT%H%M")
     label = "scheduled run"
+    local = when.astimezone(ZoneInfo(tz))
+    check_label = f"check before the run at {local:%b %-d %-I:%M %p %Z}"
     _create(
         client, f"{PREFIX}{stamp}-run", when, tz, function_arn, role_arn,
-        {"action": "run", "label": label}, "re:Invent: reserve the approved plan",
+        {"action": "run", "label": label, "tz": tz, "scheduled_for": when.isoformat()},
+        "re:Invent: reserve the approved plan",
     )  # fmt: skip
     check_at = when - CHECK_BEFORE
     has_check = check_at >= now + MIN_LEAD
@@ -63,7 +66,7 @@ def schedule_run(
         try:
             _create(
                 client, f"{PREFIX}{stamp}-check", check_at, tz, function_arn, role_arn,
-                {"action": "preflight", "label": "check before scheduled run"},
+                {"action": "preflight", "label": check_label},
                 "re:Invent: sign-in and plan check before the run",
             )  # fmt: skip
         except Exception:
