@@ -253,7 +253,8 @@ def test_schedule_time_says_when_it_will_run_and_refuses_a_past_time(monkeypatch
     today = datetime.now(ZoneInfo("America/Los_Angeles")).date()  # the app's fallback timezone
     try:
         assert not at.exception
-        assert any("Not scheduled yet" in c.value for c in at.caption)  # starts ten minutes ahead
+        assert at.time_input(key="run_time").value is None  # no suggestion to go out of date
+        assert any("No runs scheduled" in c.value for c in at.caption)
 
         at.date_input(key="run_date").set_value(today + timedelta(days=30))
         at.time_input(key="run_time").set_value(time(21, 5))

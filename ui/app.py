@@ -1600,8 +1600,6 @@ def scheduled_runs(approved, pstore) -> None:
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
-    from reinvent_agent.run_schedule import list_runs
-
     if not (cfg.reservation_function_arn and cfg.scheduler_role_arn):
         return st.warning(
             "Redeploy to use scheduled runs: `cd infra && npx aws-cdk@2 deploy --all`, "
@@ -1609,18 +1607,11 @@ def scheduled_runs(approved, pstore) -> None:
         )
     tz = viewer_tz() or "America/Los_Angeles"
     now = datetime.now(ZoneInfo(tz))
-    soon = now + timedelta(minutes=10)
-    # Start ten minutes ahead, and don't keep yesterday's date in a tab left open overnight.
+    # Don't keep yesterday's date in a tab left open overnight.
     if st.session_state.get("run_date", now.date() - timedelta(days=1)) < now.date():
-        st.session_state["run_date"] = soon.date()
-    if "run_time" not in st.session_state:  # empty when a run is already scheduled
-        try:
-            scheduled = bool(list_runs(accounts.scheduler_client(cfg)))
-        except Exception:
-            scheduled = False
-        st.session_state["run_time"] = (
-            None if scheduled else soon.time().replace(second=0, microsecond=0)
-        )
+        st.session_state["run_date"] = now.date()
+    # Empty until a time is picked: a suggested time would go out of date in an open tab.
+    st.session_state.setdefault("run_time", None)
     c1, c2, c3 = st.columns([2, 2, 2])
     c1.date_input("Date", min_value=now.date(), key="run_date")
     c2.time_input(f"Time, AM/PM ({tz})", step=60, format="12h", key="run_time")
