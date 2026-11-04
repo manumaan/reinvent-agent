@@ -48,12 +48,14 @@ def config_set_api_key():
         SecretId=cfg.anthropic_key_secret_arn, SecretString=key
     )
     clear_caches()
-    typer.echo("Stored. Claude calls now use the Claude API (unset with `config clear-api-key`).")
+    typer.echo(
+        "Stored. To use it for Claude calls: `reinvent-agent config set-provider anthropic`."
+    )
 
 
 @config_app.command("clear-api-key")
 def config_clear_api_key():
-    """Reset the secret to its placeholder, switching Claude calls back to Bedrock."""
+    """Reset the Claude API key secret to its placeholder."""
     import boto3
 
     from reinvent_agent.config import API_KEY_PLACEHOLDER, settings
@@ -65,17 +67,18 @@ def config_clear_api_key():
     boto3.client("secretsmanager", region_name=cfg.region).put_secret_value(
         SecretId=cfg.anthropic_key_secret_arn, SecretString=API_KEY_PLACEHOLDER
     )
-    typer.echo("Cleared. Claude calls use Bedrock again.")
+    typer.echo("Cleared.")
 
 
 @config_app.command("set-provider")
 def config_set_provider(
-    provider: str = typer.Argument(..., help="bedrock, anthropic, or auto"),
+    provider: str = typer.Argument(..., help="openrouter, bedrock, anthropic, or auto"),
     model: str | None = typer.Option(None, help="Bare model ID, e.g. claude-opus-4-7"),
 ):
     """Choose the Claude endpoint (saved locally; REINVENT_LLM_PROVIDER still wins).
 
-    `auto` uses the Claude API when an API key is stored, else Bedrock.
+    The default is OpenRouter. `auto` uses the Claude API when an API key is stored, else
+    Bedrock.
     """
     from reinvent_agent.config import load_preferences, save_preferences
     from reinvent_agent.llm import get_provider
@@ -378,7 +381,8 @@ def catalog_search(
 @app.command("check-models")
 def check_models(
     provider: str | None = typer.Option(
-        None, help="Probe this endpoint instead of the configured one (bedrock, anthropic)"
+        None,
+        help="Probe this endpoint instead of the configured one (openrouter, bedrock, anthropic)",
     ),
 ):
     """Probe the embedding model and which Claude models an endpoint can call."""
@@ -429,11 +433,10 @@ def check_models(
         bare = working[0].removeprefix(llm.model_prefix)
         typer.echo(f"Use:  reinvent-agent config set-provider {llm.name} --model {bare}")
     elif not working:
-        hint = (
-            f"Request Claude access for this account in Bedrock ({cfg.region})"
-            if llm.name == "bedrock"
-            else "Check the API key (`config set-api-key`) and your Claude Console billing"
-        )
+        hint = {
+            "bedrock": f"Request Claude access for this account in Bedrock ({cfg.region})",
+            "openrouter": "Check the OpenRouter key and its credits",
+        }.get(llm.name, "Check the API key (`config set-api-key`) and your Claude Console billing")
         typer.echo(f"No Claude model answered. {hint}, then re-run.")
 
 

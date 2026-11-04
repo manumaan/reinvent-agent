@@ -25,7 +25,7 @@ def test_env_overrides(monkeypatch):
     try:
         cfg = config.settings()
         assert (cfg.vector_bucket, cfg.sessions_table, cfg.region) == ("vb", "tbl", "us-east-1")
-        assert (cfg.llm_provider, cfg.model) == ("bedrock", "anthropic.claude-opus-4-8")
+        assert (cfg.llm_provider, cfg.model) == ("openrouter", "anthropic/claude-opus-4.8")
     finally:
         config.settings.cache_clear()
 
@@ -35,7 +35,7 @@ def test_api_key_selects_claude_api(monkeypatch):
     monkeypatch.setenv("REINVENT_SESSIONS_TABLE", "tbl")
     monkeypatch.setenv("REINVENT_ANTHROPIC_KEY_SECRET_ID", "arn:key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-    monkeypatch.delenv("REINVENT_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("REINVENT_LLM_PROVIDER", "auto")
     monkeypatch.delenv("REINVENT_MODEL", raising=False)
     config.settings.cache_clear()
     try:
@@ -89,7 +89,7 @@ def test_secret_key_selects_claude_api(monkeypatch):
     monkeypatch.setenv("REINVENT_SESSIONS_TABLE", "tbl")
     monkeypatch.setenv("REINVENT_ANTHROPIC_KEY_SECRET_ID", "arn:key")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("REINVENT_LLM_PROVIDER", raising=False)
+    monkeypatch.setenv("REINVENT_LLM_PROVIDER", "auto")
     monkeypatch.delenv("REINVENT_MODEL", raising=False)
     monkeypatch.setattr(config, "_secret_value", lambda sid, region, client=None: "sk-ant-x")
     config.settings.cache_clear()
@@ -129,7 +129,47 @@ def test_provider_model_ids():
 
     assert get_provider("bedrock").model_id("claude-haiku-4-5") == "anthropic.claude-haiku-4-5"
     assert get_provider("anthropic").model_id("anthropic.claude-opus-4-8") == "claude-opus-4-8"
+    router = get_provider("openrouter")
+    assert router.model_id("claude-opus-4-8") == "anthropic/claude-opus-4.8"
+    assert router.model_id("claude-haiku-4-5") == "anthropic/claude-haiku-4.5"
+    assert router.model_id("anthropic/claude-opus-4.8") == "anthropic/claude-opus-4.8"
     import pytest
 
     with pytest.raises(ValueError):
         get_provider("openai")
+
+
+def test_openrouter_uses_the_anthropic_sdk_and_its_secret(monkeypatch):
+    from anthropic import Anthropic
+
+    from reinvent_agent.llm import make_client
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("REINVENT_OPENROUTER_SECRET_ID", raising=False)
+    asked = []
+
+    def secret(sid, region, client=None):
+        asked.append(sid)
+        return "sk-or-from-secret"
+
+    monkeypatch.setattr(config, "_secret_value", secret)
+    client = make_client("us-east-1", "openrouter")
+    assert isinstance(client, Anthropic)
+    assert str(client.base_url).rstrip("/") == "https://openrouter.ai/api"
+    assert client.api_key == "sk-or-from-secret"
+    assert asked == ["instarag-openrouter-key-mt"]
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")  # env wins, no secret read
+    assert make_client("us-east-1", "openrouter").api_key == "sk-or-env"
+    assert len(asked) == 1
+
+
+def test_openrouter_without_a_key_says_so(monkeypatch):
+    import pytest
+
+    from reinvent_agent.llm import make_client
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(config, "_secret_value", lambda sid, region, client=None: None)
+    with pytest.raises(RuntimeError, match="No OpenRouter key"):
+        make_client("us-east-1", "openrouter")

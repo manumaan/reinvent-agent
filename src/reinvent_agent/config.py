@@ -18,6 +18,7 @@ from reinvent_agent.llm import PROVIDERS, get_provider
 REGION = "us-east-1"
 STACKS = ("ReinventAgentData", "ReinventAgentSearch", "ReinventAgentReservations")
 API_KEY_PLACEHOLDER = "UNSET"  # initial value of the AnthropicApiKey secret
+OPENROUTER_SECRET = "instarag-openrouter-key-mt"  # already in the account, not in our stacks
 DEFAULT_MODELS = {name: p.model_id(p.default_model) for name, p in PROVIDERS.items()}
 
 
@@ -96,6 +97,15 @@ def anthropic_api_key(secret_id: str | None, region: str = REGION, client=None) 
     return None if value in (None, "", API_KEY_PLACEHOLDER) else value
 
 
+def openrouter_api_key(region: str = REGION, client=None) -> str | None:
+    """OPENROUTER_API_KEY from the environment, else the OpenRouter secret. Like the Claude
+    API key, it is never stored on Settings."""
+    if key := os.environ.get("OPENROUTER_API_KEY"):
+        return key
+    secret = os.environ.get("REINVENT_OPENROUTER_SECRET_ID", OPENROUTER_SECRET)
+    return _secret_value(secret, region, client) or None
+
+
 @lru_cache(maxsize=4)
 def _secret_value(secret_id: str, region: str, client=None) -> str | None:
     try:
@@ -125,8 +135,8 @@ def settings() -> Settings:
     outputs = {} if all(env(k) for k in explicit) else stack_outputs(region)
     key_secret = env("REINVENT_ANTHROPIC_KEY_SECRET_ID") or outputs.get("AnthropicApiKeySecretArn")
     prefs = load_preferences()
-    # Precedence: env var, then `config set-provider`, then auto (API key present?).
-    provider = env("REINVENT_LLM_PROVIDER") or prefs.get("provider") or "auto"
+    # Precedence: env var, then `config set-provider`, then OpenRouter.
+    provider = env("REINVENT_LLM_PROVIDER") or prefs.get("provider") or "openrouter"
     if provider == "auto":
         provider = "anthropic" if anthropic_api_key(key_secret, region) else "bedrock"
     llm = get_provider(provider)
