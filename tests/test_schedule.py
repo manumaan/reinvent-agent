@@ -167,6 +167,10 @@ def test_timeline_groups_real_schedule_by_day_and_flags_overlaps(tmp_path):
     assert rows["Lunch"]["kind"] == "personal time" and rows["Lunch"]["end"] == "13:00"
     assert rows["Lunch"]["overlaps"] == ["SVS310"]  # SVS310 runs 10:30-12:30
 
+    only = ms.timeline(sched, reserved_only=True)["2026-12-01"]
+    assert all(e["reserved"] or e["kind"] == "personal time" for e in only)
+    assert len(only) < len(days["2026-12-01"])
+
 
 class StickyClient(WriteClient):
     """Delete calls 'succeed' but AWS keeps STICKY; BOOM raises."""

@@ -25,7 +25,6 @@ from reinvent_agent.events_api import EventsApiClient, Session
 from reinvent_agent.events_api.auth import AuthError, interactive_login, revoke
 from reinvent_agent.llm import get_provider
 from reinvent_agent.reservations import (
-    API_OPENS,
     FULL,
     HAS_SEATS,
     NOT_RESERVABLE,
@@ -247,6 +246,17 @@ def _reservation_info(checked_at: float) -> ReservationInfo:
 
 
 def seat_check():
+    from reinvent_agent.seats import seats_path
+
+    try:
+        changed = seats_path(cfg.event_id).stat().st_mtime
+    except OSError:
+        return None
+    return _load_seats(changed)
+
+
+@st.cache_resource(max_entries=1)
+def _load_seats(changed: float):
     from reinvent_agent.seats import load_seats
 
     return load_seats(cfg.event_id)
@@ -1207,12 +1217,12 @@ def catalog_tab(signed_in: bool):
 
 
 def schedule_tab(signed_in: bool):
-    """Only what is really in your AWS Events schedule: reservations, favorites and
-    personal time, day by day."""
+    """Only what you really hold in your AWS Events schedule: reservations and personal
+    time, day by day."""
     from datetime import date
 
     if not signed_in:
-        return st.info("Sign in to see your favorites, reservations and personal time.")
+        return st.info("Sign in to see your reservations and personal time.")
     sched_ = my_schedule()
     try:
         sched = sched_.load()
@@ -1221,17 +1231,13 @@ def schedule_tab(signed_in: bool):
 
     if note := release_note(viewer_tz()):
         st.info(f"🗓️ {note}")
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     c1.metric(f"{RES_ICON} Reserved", len(sched.reserved))
-    c2.metric(f"{FAV_ICON} Favorites", len(sched.favorites))
-    c3.metric("🕑 Personal time", len(sched.personal_time))
-    days = sched_.timeline(sched)
+    c2.metric("🕑 Personal time", len(sched.personal_time))
+    days = sched_.timeline(sched, reserved_only=True)
     if not days:
-        return st.info("Your schedule is empty: favorite or reserve sessions from the Search tab.")
-    st.caption(
-        f"{RES_ICON} reserved · {FAV_ICON} favorite · 🕑 personal time · "
-        "⚠️ overlaps another entry the same day"
-    )
+        return st.info("Your schedule is empty: reserve sessions from the Search tab.")
+    st.caption(f"{RES_ICON} reserved · 🕑 personal time · ⚠️ overlaps another entry the same day")
     for day, items in days.items():
         label = (
             "No fixed time" if day == "unscheduled"
@@ -1239,12 +1245,10 @@ def schedule_tab(signed_in: bool):
             else date.fromisoformat(day).strftime("%A, %b %-d")
         )  # fmt: skip
         n_res = sum(e["reserved"] for e in items)
-        st.subheader(f"{label}  ·  {len(items)} entries" + (f", {n_res} reserved" if n_res else ""))
+        st.subheader(f"{label}  ·  {n_res} reserved" if n_res else label)
         rows = [
             {
-                "": (RES_ICON if e["reserved"] else "")
-                + (FAV_ICON if e["favorite"] else "")
-                + ("🕑" if e["kind"] == "personal time" else ""),
+                "": RES_ICON if e["reserved"] else "🕑",
                 "start": e.get("start"),
                 "end": e.get("end"),
                 "code": e.get("code"),
@@ -1272,27 +1276,21 @@ def schedule_tab(signed_in: bool):
 
 
 def withdrawn_notice(items: list[dict]) -> None:
-    """AWS removed these sessions; your favorite/reservation still points at them."""
+    """AWS removed these sessions; your reservation still points at them."""
     st.caption(
         "AWS removed these sessions from the catalog (the API now answers “no session "
-        "with this id”), but your favorites or reservations still point at them. Names "
+        "with this id”), but your reservations still point at them. Names "
         "come from earlier catalog downloads."
     )
     for kind, text in st.session_state.pop("withdrawn_flash", []):
         getattr(st, kind)(text)
     code = {e["sessionId"]: e.get("code") or e["sessionId"] for e in items}
     sched = my_schedule()
-    favs = [e["sessionId"] for e in items if e.get("favorite")]
     held = [e["sessionId"] for e in items if e.get("reserved")]
-    for ids, label, action, call in (
-        (favs, f"☆ Remove {len(favs)} withdrawn from favorites", "unfavorite", sched.unfavorite),
-        (held, f"✖ Release {len(held)} withdrawn reservation(s)", "cancel reservation",
-         sched.cancel_reservation),
-    ):  # fmt: skip
-        if ids and st.button(label):
-            result = sched.attempt(action, ids, call)
-            st.session_state["withdrawn_flash"] = result.messages(lambda sid: code[sid])
-            st.rerun()
+    if held and st.button(f"✖ Release {len(held)} withdrawn reservation(s)"):
+        result = sched.attempt("cancel reservation", held, sched.cancel_reservation)
+        st.session_state["withdrawn_flash"] = result.messages(lambda sid: code[sid])
+        st.rerun()
 
 
 BAR_BLUE = "#2a78d6"  # sequential blue, step 450
@@ -1496,14 +1494,39 @@ def venue_maps_section() -> None:
         )
 
 
-def scheduled_runs(approved) -> None:
-    """Pick a date and time for the automated run; list and cancel upcoming ones."""
-    from datetime import datetime
-    from datetime import time as dtime
+def time_until(delta) -> str:
+    seconds = max(0, round(delta.total_seconds()))
+    if seconds < 600:
+        minutes, seconds = divmod(seconds, 60)
+        return f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes} min"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 48:
+        return f"{hours} h {minutes} min"
+    return f"{hours // 24} days"
+
+
+RUN_LASTS_AT_MOST = 960  # a Lambda lives 15 minutes; past that, "running" means it died
+
+
+def run_is_live(run: dict) -> bool:
+    return run["status"] == "running" and time.time() - run["started_at"] < RUN_LASTS_AT_MOST
+
+
+def clock_time(epoch: float) -> str:
+    return time.strftime("%b %d, %-I:%M:%S %p", time.localtime(epoch))
+
+
+@st.fragment
+def scheduled_runs(approved, pstore) -> None:
+    """Pick a date and time for the automated run. A fragment: using these controls
+    doesn't rerun (and grey out) the rest of the app."""
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
-    from reinvent_agent.reservations import format_time
-    from reinvent_agent.run_schedule import cancel_run, list_runs, schedule_run
+    from reinvent_agent.run_schedule import MIN_LEAD, schedule_run
 
     if not (cfg.reservation_function_arn and cfg.scheduler_role_arn):
         return st.warning(
@@ -1511,50 +1534,163 @@ def scheduled_runs(approved) -> None:
             "then restart the app."
         )
     tz = viewer_tz() or "America/Los_Angeles"
-    client = accounts.scheduler_client(cfg)
-    try:
-        runs = list_runs(client)
-    except Exception as e:
-        return st.error(f"Couldn't read scheduled runs: {e}")
-    for r in runs:
-        c1, c2 = st.columns([4, 1])
-        check = " · sign-in check 30 min before" if r.has_check else ""
-        c1.markdown(f"🗓️ **{r.when.astimezone(ZoneInfo(tz)):%a %b %-d %Y}**, "
-                    f"{format_time(r.when, tz)}{check}")  # fmt: skip
-        if c2.button("✖ Cancel", key=f"cancel_run_{r.stamp}", use_container_width=True):
-            try:
-                cancel_run(r.stamp, client)
-            except Exception as e:
-                set_flash(("error", f"Couldn't cancel the run: {e}"))
-            set_flash(("success", "Cancelled the scheduled run."))
+    now = datetime.now(ZoneInfo(tz))
+    soon = now + timedelta(minutes=10)
+    # Start ten minutes ahead, and don't keep yesterday's date in a tab left open overnight.
+    if st.session_state.get("run_date", now.date() - timedelta(days=1)) < now.date():
+        st.session_state["run_date"] = soon.date()
+    st.session_state.setdefault("run_time", soon.time().replace(second=0, microsecond=0))
     c1, c2, c3 = st.columns([2, 2, 2])
-    day = c1.date_input("Date", value=datetime.now(ZoneInfo(tz)).date(), key="run_date")
-    at = c2.time_input(f"Time ({tz})", value=dtime(9, 0), step=300, key="run_time")
+    day = c1.date_input("Date", min_value=now.date(), key="run_date")
+    at = c2.time_input(f"Time, AM/PM ({tz})", step=60, format="12h", key="run_time")
+    when = datetime.combine(day, at, tzinfo=ZoneInfo(tz))
+    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
     missing = []
     if approved is None:
         missing.append("approve a plan")
     if not accounts.unattended_enabled():
         missing.append("enable the unattended run")
     c3.markdown("&nbsp;")
-    if c3.button("⏰ Schedule run", type="primary", use_container_width=True,
-                 disabled=bool(missing)):  # fmt: skip
-        when = datetime.combine(day, at, tzinfo=ZoneInfo(tz))
+    clicked = c3.button("⏰ Schedule run", type="primary", use_container_width=True,
+                        disabled=bool(missing))  # fmt: skip
+    if clicked:
         try:
-            schedule_run(when, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn, client)
+            if when < now + MIN_LEAD:
+                st.warning(
+                    f"Not scheduled: {chosen} is too soon or already past. "
+                    f"It's {now:%-I:%M %p} now; choose a time at least 2 minutes ahead."
+                )
+            else:
+                schedule_run(
+                    when, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn,
+                    accounts.scheduler_client(cfg),
+                )  # fmt: skip
+                st.success(f"Scheduled the run for {chosen}.")
         except ValueError as e:
-            set_flash(("warning", f"Couldn't schedule the run: {e}"))
+            st.warning(f"Couldn't schedule the run: {e}")
         except Exception as e:
             if "Conflict" in type(e).__name__:
-                set_flash(("warning", "Couldn't schedule the run: one is already set for then."))
-            set_flash(("error", f"Couldn't schedule the run: {e}"))
-        set_flash(("success", f"Scheduled run for {when:%a %b %-d %Y}, {format_time(when, tz)}."))
+                st.warning("Couldn't schedule the run: one is already set for then.")
+            else:
+                st.error(f"Couldn't schedule the run: {e}")
     if missing:
         st.caption("To schedule a run: " + " and ".join(missing) + ".")
+    live_run_status(pstore, tz)
     st.caption(
         "A run really reserves sessions: it uses whichever plan is approved at that moment. "
         "It stays scheduled until it fires or you cancel it. Sign in again shortly before "
         "a far-off run and press Refresh cloud sign-in, because sign-ins expire on their own."
     )
+
+
+def cancel_scheduled_run(stamp: str) -> None:
+    """A button callback: runs before the status below is redrawn, so it's gone at once."""
+    from reinvent_agent.run_schedule import cancel_run
+
+    try:
+        cancel_run(stamp, accounts.scheduler_client(cfg))
+        st.session_state["cancel_flash"] = [("success", "Cancelled the scheduled run.")]
+    except Exception as e:
+        st.session_state["cancel_flash"] = [("error", f"Couldn't cancel the run: {e}")]
+
+
+@st.fragment(run_every=10)
+def live_run_status(pstore, tz: str) -> None:
+    """The live part: the time you've picked, runs scheduled, and a run in progress."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from reinvent_agent.run_schedule import MIN_LEAD, list_runs
+
+    now = datetime.now(ZoneInfo(tz))
+    when = datetime.combine(
+        st.session_state["run_date"], st.session_state["run_time"], tzinfo=ZoneInfo(tz)
+    )
+    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
+    if when < now + MIN_LEAD:
+        st.warning(
+            f"The time you've picked, {chosen}, is too soon or already past. It's "
+            f"{now:%-I:%M %p} now: choose a time at least 2 minutes ahead."
+        )
+    else:
+        st.caption(
+            f"🕓 Not scheduled yet. **Schedule run** would run it on **{chosen}**, "
+            f"{time_until(when - now)} from now."
+        )
+    for kind, text in st.session_state.pop("cancel_flash", []):
+        getattr(st, kind)(text)
+    client = accounts.scheduler_client(cfg)
+    try:
+        runs = list_runs(client)
+        history = pstore.runs(3)
+    except Exception as e:
+        return st.error(f"Couldn't read scheduled runs: {e}")
+    recent = [r for r in history if not r.get("dry_run")]
+    live = next((r for r in recent if run_is_live(r)), None)
+    if live:
+        st.info(
+            f"▶️ **Running now**: the {live['label']} started at "
+            f"{clock_time(live['started_at'])}. Results will appear in Run history."
+        )
+    elif recent and time.time() - (recent[0].get("finished_at") or 0) < 300:
+        r = recent[0]
+        st.success(
+            f"✅ The {r['label']} finished at {clock_time(r['finished_at'])}: {r['status']}, "
+            f"{len(r['reserved'])} reserved, {len(r['failed'])} not. Details in Run history."
+        )
+    if not runs:
+        return st.caption("No runs scheduled.")
+    for r in runs:
+        local = r.when.astimezone(ZoneInfo(tz))
+        left = r.when - now
+        if left.total_seconds() <= 0 and live:
+            continue  # it fired: shown as running above
+        c1, c2 = st.columns([4, 1])
+        name = f"**{local:%a %b %-d %Y, %-I:%M %p %Z}**"
+        if left.total_seconds() > 0:
+            check = " · sign-in check 30 min before" if r.has_check else ""
+            c1.markdown(f"🗓️ Scheduled for {name} · starts in {time_until(left)}{check}")
+        else:
+            c1.markdown(f"⏳ Scheduled for {name} · starting now (AWS can take up to a minute)")
+        c2.button("✖ Cancel", key=f"cancel_run_{r.stamp}", use_container_width=True,
+                  on_click=cancel_scheduled_run, args=(r.stamp,))  # fmt: skip
+
+
+@st.fragment(run_every=10)
+def run_history(pstore) -> None:
+    """Every run, real or dry, newest first; a run shows up the moment it starts."""
+    try:
+        runs = pstore.runs(20)
+    except Exception as e:
+        return st.error(f"Couldn't read the run history: {e}")
+    if not runs:
+        return st.caption("No runs yet.")
+    for r in runs:
+        when = clock_time(r["started_at"])
+        dry = r.get("dry_run")
+        kind = "🧪 **DRY RUN, nothing reserved**" if dry else "🎟️ **REAL RUN**"
+        if run_is_live(r):
+            outcome = "▶️ running now…"
+        elif r["status"] == "running":
+            outcome = "⚠️ stopped without finishing"
+        else:
+            verb = "would be reserved or kept" if dry else "reserved"
+            outcome = f"{r['status'].replace('_', ' ')}: {len(r['reserved'])} {verb}, "
+            outcome += f"{len(r['failed'])} not"
+        st.markdown(f"{kind} · {when} · {r['label']} · {outcome}")
+        for n in r["notes"]:
+            st.caption(n)
+        if r.get("log"):
+            run_log_table(r)
+        elif r["reserved"] or r["failed"]:  # runs from before the step log
+            st.dataframe(
+                [{"": "✅", "code": x["code"], "title": x["title"], "how": x["how"]}
+                 for x in r["reserved"]]
+                + [{"": "❌", "code": x["code"], "title": x["title"], "how": x["reason"]}
+                   for x in r["failed"]],
+                hide_index=True,
+                use_container_width=True,
+            )  # fmt: skip
 
 
 def plans_tab(signed_in: bool):
@@ -1584,35 +1720,10 @@ def plans_tab(signed_in: bool):
     if approved:
         with st.expander(f"2 · Approved plan v{approved.version}", expanded=True):
             show_plan(approved)
-    with st.expander(
-        "📝 Oct 6: reserve by hand in the re:Invent portal (checklist)",
-        expanded=time.time() < API_OPENS.timestamp(),
-    ):
-        portal_checklist(approved or pstore.draft())
     with st.expander("3 · Automated run and notifications", expanded=bool(approved)):
-        unattended_section(approved)
-    runs = pstore.runs(10)
-    if runs:
-        with st.expander(f"4 · Run history ({len(runs)})"):
-            for r in runs:
-                when = time.strftime("%b %d %H:%M", time.localtime(r["started_at"]))
-                st.markdown(
-                    f"**{when} · {r['label']}** — {r['status']}: {len(r['reserved'])} reserved, "
-                    f"{len(r['failed'])} not"
-                )
-                for n in r["notes"]:
-                    st.caption(n)
-                if r.get("log"):
-                    run_log_table(r)
-                elif r["reserved"] or r["failed"]:  # runs from before the step log
-                    st.dataframe(
-                        [{"": "✅", "code": x["code"], "title": x["title"], "how": x["how"]}
-                         for x in r["reserved"]]
-                        + [{"": "❌", "code": x["code"], "title": x["title"], "how": x["reason"]}
-                           for x in r["failed"]],
-                        hide_index=True,
-                        use_container_width=True,
-                    )  # fmt: skip
+        unattended_section(approved, pstore)
+    with st.expander("4 · Run history", expanded=bool(approved)):
+        run_history(pstore)
 
 
 def flash() -> None:
@@ -1628,6 +1739,7 @@ def set_flash(*msgs) -> None:
 ROLE_LABELS = {"primary": f"{RES_ICON} reserve", "backup": "↪ backup", "skip": "✖ skip"}
 
 
+@st.fragment
 def plan_editor(pstore, sched_: MySchedule, sched) -> None:
     from reinvent_agent.reservation_plan import (
         PRIORITIES,
@@ -1829,52 +1941,6 @@ def show_plan(plan) -> None:
         )
 
 
-def portal_checklist(plan) -> None:
-    """The plan in reservation order, to work through by hand in the portal on Oct 6."""
-    from reinvent_agent.reservation_plan import PRIORITIES
-    from reinvent_agent.reservations import RELEASES, format_time
-
-    if plan is None:
-        return st.info("Build a plan first (section 1).")
-    tz = viewer_tz()
-    st.markdown(
-        "On **October 6** seats can only be reserved **by hand in the re:Invent portal** "
-        f"(first half at {format_time(RELEASES[0][1], tz)}, second half at "
-        f"{format_time(RELEASES[1][1], tz)}). The API, and so this app's Reserve and the "
-        "unattended run, opens on **October 8**. Work down this list in order: search the "
-        "portal by code; if a session is full, try its backups."
-    )
-    rows = [
-        {
-            "#": n,
-            "priority": PRIORITIES[p.priority],
-            "code": p.code,
-            "title": p.title,
-            "day": p.day,
-            "time": f"{p.start}-{p.end}" if p.start else "",
-            "venue": p.venue,
-            "sub-venue": p.sub_venue,
-            "backups (if full)": ", ".join(b.code for b in plan.backups_for(p.session_id)),
-        }
-        for n, p in enumerate(plan.primaries, 1)
-    ]
-    st.dataframe(rows, hide_index=True, use_container_width=True)
-    import csv
-    import io
-
-    buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=list(rows[0]) if rows else ["#"])
-    writer.writeheader()
-    writer.writerows(rows)
-    st.download_button(
-        "Download checklist (CSV)", buf.getvalue(), "reinvent-portal-checklist.csv", "text/csv"
-    )
-    st.caption(
-        "Whatever you reserve in the portal shows up in your schedule; the Oct 8 run skips "
-        "it and only reserves what is still missing."
-    )
-
-
 LOG_ACTIONS = {
     "reserve": f"{RES_ICON} reserve",
     "backup": "↪ backup",
@@ -1906,64 +1972,168 @@ def run_log_table(report: dict) -> None:
     st.dataframe(rows, hide_index=True, use_container_width=True)
 
 
-def dry_run_section(approved) -> None:
+def start_dry_run(pstore, plan, full: list[str], where: str) -> None:
+    """In the background, so the page stays usable while it reads your schedule and seats."""
     from reinvent_agent.reservation_runner import dry_run
 
+    job = {"where": where, "started": time.time()}
+    st.session_state["dry_run_job"] = job
+
+    def work() -> None:
+        try:
+            if where == "cloud":
+                result = accounts.invoke_cloud(
+                    "dry_run", "dry run (cloud)", cfg, pretend_full=full,
+                    email=accounts.has_confirmed_email(cfg),
+                )  # fmt: skip
+                if "report" in result:
+                    job["report"] = result["report"]
+                else:
+                    job["error"] = result.get("message", str(result))
+            else:
+                report = dry_run(
+                    accounts.events_client(cfg), cfg.event_id, plan, full,
+                    accounts.notifier(cfg), "dry run (this computer)",
+                ).to_dict()  # fmt: skip
+                pstore.save_run(report)
+                job["report"] = report
+        except Exception as e:
+            job["error"] = (
+                "Redeploy to dry-run in the cloud: `cd infra && npx aws-cdk@2 deploy --all`."
+                if "unknown action" in str(e)
+                else str(e)
+            )
+        job["finished"] = time.time()
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+@st.fragment
+def dry_run_section(approved, pstore) -> None:
     st.markdown("**🧪 Dry run**")
-    plan = approved or accounts.plan_store(cfg).draft()
+    plan = approved or pstore.draft()
     if plan is None or not plan.primaries:
         return st.caption("Build a plan with at least one 🎟️ reserve session to try a dry run.")
     which = f"approved plan v{approved.version}" if approved else "draft plan (not approved yet)"
     st.caption(
         f"Goes through the run step by step on your {which}, with your real schedule and "
-        "live seats. It reserves nothing and sends no email."
+        "live seats. It reserves nothing, and emails the full log to your confirmed address."
     )
     names = {i.session_id: f"{i.code} · {i.title}" for i in plan.items if i.role != "skip"}
     full = st.multiselect(
-        "Pretend these are full, to see the backups step in",
+        "Test your backups: treat these sessions as full",
         list(names),
         format_func=names.get,
         key="dry_full",
     )
+    job = st.session_state.get("dry_run_job")
+    busy = bool(job and "finished" not in job)
     c1, c2 = st.columns(2)
-    if c1.button("🧪 Dry run (this computer)", use_container_width=True):
-        try:
-            report = dry_run(accounts.events_client(cfg), cfg.event_id, plan, full)
-            st.session_state["dry_run_report"] = report.to_dict()
-        except Exception as e:
-            st.error(f"Couldn't do the dry run: {e}")
+    if c1.button("🧪 Dry run (this computer)", use_container_width=True, disabled=busy):
+        start_dry_run(pstore, plan, full, "this computer")
     if c2.button("🧪 Dry run (cloud)", use_container_width=True,
-                 disabled=not accounts.unattended_enabled(),
+                 disabled=busy or not accounts.unattended_enabled(),
                  help="The same steps in the Lambda; also tests the cloud sign-in."):  # fmt: skip
-        try:
-            result = accounts.invoke_cloud("dry_run", "dry run", cfg, pretend_full=full)
-            if "report" in result:
-                st.session_state["dry_run_report"] = result["report"]
-            else:
-                st.error(f"Couldn't do the dry run: {result.get('message', result)}")
-        except Exception as e:
-            if "unknown action" in str(e):
-                st.warning(
-                    "Redeploy to dry-run in the cloud: `cd infra && npx aws-cdk@2 deploy --all`."
-                )
-            else:
-                st.error(f"Couldn't do the dry run: {e}")
-    report = st.session_state.get("dry_run_report")
-    if report:
-        kept, refused = len(report["reserved"]), len(report["failed"])
-        if report["status"] != "done":
-            st.error(f"Dry run stopped: {report['status'].replace('_', ' ')}.")
-        else:
-            d1, d2, d3 = st.columns(3)
-            d1.metric("Reserved or already held", kept)
-            d2.metric("Not reserved", refused)
-            d3.metric("Steps", len(report["log"]))
+        start_dry_run(pstore, plan, full, "cloud")
+    job = st.session_state.get("dry_run_job")
+    st.fragment(dry_run_result, run_every=2 if job and "finished" not in job else None)()
+
+
+def dry_run_result() -> None:
+    """Polled while a dry run is going; only reads what the background thread left."""
+    job = st.session_state.get("dry_run_job")
+    if not job:
+        return
+    if "finished" not in job:
+        waited = round(time.time() - job["started"])
+        return st.info(f"🧪 Dry run ({job['where']}) in progress, {waited} s… Nothing is reserved.")
+    if "error" in job:
+        return st.error(f"Couldn't do the dry run: {job['error']}")
+    report = job["report"]
+    if report["status"] != "done":
+        st.error(f"🧪 Dry run stopped: {report['status'].replace('_', ' ')}. Nothing was reserved.")
+    else:
+        st.success(f"🧪 **Dry run finished ({job['where']}). Nothing was reserved.**")
+        d1, d2, d3 = st.columns(3)
+        d1.metric("Would be reserved or kept", len(report["reserved"]))
+        d2.metric("Not reserved", len(report["failed"]))
+        d3.metric("Steps", len(report["log"]))
+    if report["log"]:
         run_log_table(report)
-        for n in report["notes"]:
-            st.caption(n)
+    for n in report["notes"]:
+        st.caption(n)
 
 
-def unattended_section(approved) -> None:
+MAILBOXES = {
+    "gmail.com": ("Open Gmail", "https://mail.google.com/"),
+    "googlemail.com": ("Open Gmail", "https://mail.google.com/"),
+    "outlook.com": ("Open Outlook", "https://outlook.live.com/mail/"),
+    "hotmail.com": ("Open Outlook", "https://outlook.live.com/mail/"),
+    "live.com": ("Open Outlook", "https://outlook.live.com/mail/"),
+    "yahoo.com": ("Open Yahoo Mail", "https://mail.yahoo.com/"),
+}
+
+
+@st.fragment
+def notifications() -> None:
+    st.markdown("**Notifications**")
+    try:
+        subs = accounts.subscriptions(cfg)
+    except Exception:
+        subs = []
+    if subs and "sub_email" not in st.session_state:  # show the address already subscribed
+        first = next((s for s in subs if s["confirmed"]), subs[0])
+        st.session_state["sub_email"] = first["endpoint"]
+    e1, e2 = st.columns([3, 1])
+    email = e1.text_input("Email for run results", label_visibility="collapsed",
+                          placeholder="you@example.com", key="sub_email").strip()  # fmt: skip
+    known = {s["endpoint"].lower() for s in subs}
+    if e2.button("Subscribe", use_container_width=True,
+                 disabled="@" not in email or email.lower() in known):  # fmt: skip
+        try:
+            accounts.subscribe(email, cfg)
+            subs = accounts.subscriptions(cfg)
+        except Exception as e:
+            st.error(f"Couldn't subscribe {email}: {e}")
+    pending = any(not s["confirmed"] for s in subs)
+    st.fragment(subscription_status, run_every=5 if pending else None)()
+
+
+def subscription_status() -> None:
+    """Polled while an address is waiting for its confirmation click."""
+    try:
+        subs = accounts.subscriptions(cfg)
+    except Exception as e:
+        return st.error(f"Couldn't read your email subscription: {e}")
+    if not subs:
+        return st.caption("📧 Add an email to get run results and dry run logs.")
+    for sub in subs:
+        address = sub["endpoint"]
+        if sub["confirmed"]:
+            st.success(f"✅ **Subscribed:** run results and dry run logs go to {address}.")
+            continue
+        st.warning(
+            f"📬 **One more step: confirm your email.** AWS sent “AWS Notification - "
+            f"Subscription Confirmation” to **{address}**. Open it and click **Confirm "
+            "subscription** (check spam too). Nothing is emailed until you do."
+        )
+        c1, c2 = st.columns(2)
+        domain = address.rsplit("@", 1)[-1].lower()
+        if domain in MAILBOXES:
+            c1.link_button(MAILBOXES[domain][0], MAILBOXES[domain][1], use_container_width=True)
+        if c2.button("Send the email again", key=f"resend_{address}", use_container_width=True):
+            try:
+                accounts.subscribe(address, cfg)
+                st.info("Sent again.")
+            except Exception as e:
+                st.error(f"Couldn't send it again: {e}")
+        st.caption(
+            f"⏳ Waiting for your click · checked {time.strftime('%-I:%M:%S %p')} · "
+            "this updates by itself"
+        )
+
+
+def unattended_section(approved, pstore) -> None:
     st.markdown(
         "The cloud job signs in with a copy of your Builder ID tokens (Secrets Manager) and "
         "reserves your approved plan, minus anything you already hold, then emails you. "
@@ -1986,58 +2156,54 @@ def unattended_section(approved) -> None:
         set_flash(("success", "Enabled. Your sign-in is now shared with the scheduled job."))
 
     st.markdown("**⏰ Scheduled runs**")
-    scheduled_runs(approved)
+    scheduled_runs(approved, pstore)
+    notifications()
+    dry_run_section(approved, pstore)
+    test_now(approved, pstore)
 
-    st.markdown("**Notifications**")
-    subs = accounts.subscriptions(cfg)
-    for sub in subs:
-        st.caption(
-            f"📧 {sub['endpoint']}" + ("" if sub["confirmed"] else " — confirm the email from AWS")
-        )
-    e1, e2 = st.columns([3, 1])
-    email = e1.text_input("Email for run results", label_visibility="collapsed",
-                          placeholder="you@example.com")  # fmt: skip
-    if e2.button("Subscribe", use_container_width=True, disabled="@" not in email):
-        accounts.subscribe(email.strip(), cfg)
-        set_flash(("success", f"Subscribed {email}. Click the confirmation link AWS emailed you."))
 
-    dry_run_section(approved)
-
+@st.fragment
+def test_now(approved, pstore) -> None:
     st.markdown("**Test now**")
     t1, t2, t3 = st.columns(3)
     check_help = "Invokes the Lambda: signs in as you, reads your schedule, emails you."
     if t1.button("Run the cloud check now", use_container_width=True, help=check_help):
-        try:
-            result = accounts.invoke_cloud("preflight", "manual check", cfg)
-        except Exception as e:
-            set_flash(("error", f"Cloud check failed: {e}"))
-        set_flash(("success" if result.get("ok") else "error", result.get("message", str(result))))
+        with st.spinner("Asking the cloud job to check…"):
+            try:
+                result = accounts.invoke_cloud("preflight", "manual check", cfg)
+                show = st.success if result.get("ok") else st.error
+                show(result.get("message", str(result)))
+            except Exception as e:
+                st.error(f"Cloud check failed: {e}")
     run_help = (
         "Runs the job in AWS right now, once. This really reserves your approved plan, "
         "then emails the result."
     )
     if t2.button("🎟️ Reserve the plan now (cloud)", use_container_width=True,
                  disabled=approved is None, help=run_help):  # fmt: skip
-        try:
-            result = accounts.invoke_cloud("run", "cloud run", cfg)
-        except Exception as e:
-            set_flash(("error", f"Cloud run failed: {e}"))
-        set_flash(("info", f"Cloud run finished: {result.get('status')}. See Run history."))
+        with st.spinner("Reserving in the cloud…"):
+            try:
+                result = accounts.invoke_cloud("run", "cloud run", cfg)
+                st.info(f"Cloud run finished: {result.get('status')}. See Run history.")
+                my_schedule().refresh()
+            except Exception as e:
+                st.error(f"Cloud run failed: {e}")
     if t3.button(f"{RES_ICON} Reserve the plan now (this computer)", use_container_width=True,
                  disabled=approved is None,
                  help="Runs here, once. This really reserves your approved plan."):  # fmt: skip
         from reinvent_agent.reservation_runner import ReservationRunner
 
-        runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id)
-        report = runner.run(accounts.plan_store(cfg).approved(), "manual", time.time())
-        accounts.plan_store(cfg).save_run(report.to_dict())
-        my_schedule().refresh()
-        set_flash(("info", report.text()))
+        with st.spinner("Reserving…"):
+            runner = ReservationRunner(accounts.events_client(cfg), cfg.event_id)
+            report = runner.run(pstore.approved(), "manual", time.time(), on_start=pstore.save_run)
+            pstore.save_run(report.to_dict())
+            my_schedule().refresh()
+        st.info(report.text())
 
 
 signed_in = sidebar()
 model_caption()
-st.title("re:Invent 2026 planner")
+st.title("re:Invent planner")
 tab_prof, tab_short, tab_ask, tab_search, tab_plans, tab_sched, tab_venues, tab_cat = st.tabs(
     [
         "👤 Profile",

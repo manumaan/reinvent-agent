@@ -16,9 +16,10 @@ from __future__ import annotations
 import time
 from collections import deque
 from collections.abc import Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 
-from reinvent_agent.events_api.client import OperationClosedError
+from reinvent_agent.events_api.client import EventsApiError, OperationClosedError
 from reinvent_agent.events_api.models import BulkResult, Schedule
 from reinvent_agent.reservation_plan import PlanItem, ReservationPlan
 
@@ -83,9 +84,9 @@ class RunReport:
     def subject(self) -> str:
         if self.dry_run:
             if self.status != "done":
-                return f"re:Invent dry run: {self.status.replace('_', ' ')}"
-            counts = f"{len(self.reserved)} reserved or kept, {len(self.failed)} not"
-            return f"re:Invent dry run: {counts}"
+                return f"DRY RUN, nothing reserved: re:Invent, {self.status.replace('_', ' ')}"
+            counts = f"{len(self.reserved)} would be reserved or kept, {len(self.failed)} not"
+            return f"DRY RUN, nothing reserved: re:Invent, {counts}"
         if self.status == "done":
             counts = f"{len(self.reserved)} reserved"
             if self.failed:
@@ -95,22 +96,38 @@ class RunReport:
 
     def text(self) -> str:
         lines = [self.subject(), ""]
+        lines.append(
+            "This was a DRY RUN: nothing was reserved."
+            if self.dry_run
+            else "This was a REAL run, not a dry run."
+        )
         lines += self.notes
         if self.reserved:
-            lines += ["", "Reserved:"] + [
+            heading = "Would reserve, or already held:" if self.dry_run else "Reserved:"
+            lines += ["", heading] + [
                 f"  {r['code']}  {r['title']}  ({r['how']})" for r in self.reserved
             ]
         if self.failed:
-            lines += ["", "Not reserved:"] + [
+            lines += ["", "Would not be reserved:" if self.dry_run else "Not reserved:"] + [
                 f"  {f['code']}  {f['title']}  - {f['reason']}" for f in self.failed
             ]
         return "\n".join(lines)
 
     def log_text(self) -> str:
-        return "\n".join(
-            f"+{r['seconds']:>3}s  {r['action']:<8} {r['code']:<12} {r['result']:<9} {r['detail']}"
-            for r in self.log
-        )
+        """Every step, one per line: time, step, session, result, then the details."""
+        results = {RESERVED: "would reserve", REFUSED: "would be refused"} if self.dry_run else {}
+
+        def line(r: dict) -> str:
+            extra = [r["title"], r["detail"]]
+            if r.get("seats"):
+                extra.append(f"seats now: {r['seats']}")
+            result = results.get(r["result"], r["result"])
+            return (
+                f"+{r['seconds']:>3}s  {r['action']:<8} {r['code']:<12} {result:<17} "
+                + " | ".join(e for e in extra if e)
+            )
+
+        return "\n".join(line(r) for r in self.log)
 
 
 class RateLimiter:
@@ -179,13 +196,20 @@ class ReservationRunner:
         label: str,
         open_deadline: float,
         quiet: Iterable[str] = (),
+        on_start: Callable[[dict], None] | None = None,
     ) -> RunReport:
         """Reserve ``plan``; wait for seats to release until ``open_deadline`` (epoch).
 
         ``quiet``: statuses not to notify about (the all-day poll stays silent while
-        the API is closed and rate-limits its own alerts).
+        the API is closed and rate-limits its own alerts). ``on_start``: gets the report
+        as soon as the run begins, so the run history shows it right away.
         """
         report = RunReport(label=label, started_at=self.clock())
+        if on_start:
+            try:
+                on_start(report.to_dict())
+            except Exception as e:  # only the history entry: the run must still go ahead
+                report.notes.append(f"Couldn't mark the run as started: {e}")
         try:
             self._run(plan, report, open_deadline)
         except Exception as e:  # never die silently: tell the attendee
@@ -387,13 +411,27 @@ class DryRunClient:
     Only the calls the runner needs exist here, so a dry run has no way to change anything.
     """
 
-    def __init__(self, client, event_id: str, pretend_full: Iterable[str] = ()):
+    def __init__(
+        self, client, event_id: str, plan: ReservationPlan | None, pretend_full: Iterable[str] = ()
+    ):
         self.pretend_full = set(pretend_full)
-        self.sessions = {
-            s.session_id: s for s in client.iter_sessions(event_id, include_abstracts=False)
-        }
         self.real = list(client.get_schedule(event_id).reserved)
         self.added: list[str] = []
+        self.client, self.event_id = client, event_id
+        # Only what the plan and your schedule need, not the whole catalog. The read above
+        # has already refreshed the sign-in, so these can go side by side.
+        ids = {*(i.session_id for i in plan.items), *self.real} if plan else set()
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            found = pool.map(self._session, ids)
+        self.sessions = {s.session_id: s for s in found if s}
+
+    def _session(self, session_id: str):
+        try:
+            return self.client.get_session(self.event_id, session_id)
+        except EventsApiError as e:
+            if e.status != 404:  # 404: withdrawn from the catalog
+                raise
+            return None
 
     def get_schedule(self, event_id: str) -> Schedule:
         return Schedule(reserved=[*self.real, *self.added])
@@ -442,11 +480,29 @@ class DryRunClient:
         return s.seat_availability or ("reservable" if s.is_reservable else "no reserved seating")
 
 
+def _email_log(report: RunReport, notifier: Notifier | None) -> None:
+    if notifier is None:
+        report.notes.append("The log wasn't emailed: there's no confirmed notification email yet.")
+        return
+    try:
+        body = f"{report.text()}\n\nFull log:\n{report.log_text() or '(no steps)'}"
+        notifier.notify(report.subject(), body)
+        report.notes.append("The full log was sent to your notification email.")
+    except Exception as e:
+        report.notes.append(f"Couldn't email the log: {e}")
+
+
 def dry_run(
-    client, event_id: str, plan: ReservationPlan | None, pretend_full: Iterable[str] = ()
+    client,
+    event_id: str,
+    plan: ReservationPlan | None,
+    pretend_full: Iterable[str] = (),
+    notifier: Notifier | None = None,
+    label: str = "dry run",
 ) -> RunReport:
-    """The real run's steps, with no reservations and no email. Pacing is simulated, so
-    it finishes at once and the log's times show how a real run would be spaced out."""
+    """The real run's steps with no reservations, then emails the full log to ``notifier``.
+    Pacing is simulated, so it finishes at once and the log's times show how a real run
+    would be spaced out."""
 
     class Clock:
         now = time.time()
@@ -458,12 +514,12 @@ def dry_run(
             self.now += seconds
 
     clock = Clock()
-    label = "dry run"
     try:
-        sim = DryRunClient(client, event_id, pretend_full)
+        sim = DryRunClient(client, event_id, plan, pretend_full)
     except Exception as e:
         report = RunReport(label, clock(), "auth_failed", clock(), dry_run=True)
         report.notes.append(f"Could not read your schedule and seats (sign-in?): {e}")
+        _email_log(report, notifier)
         return report
     runner = ReservationRunner(sim, event_id, ListNotifier(), clock=clock, sleep=clock.sleep)
     report = runner.run(plan, label, clock())
@@ -473,8 +529,8 @@ def dry_run(
     if plan and not plan.approved_at:
         report.notes.append("This plan isn't approved: a real run would stop until it is.")
     report.notes += [
-        "Nothing was reserved and no email was sent.",
         "Seats are as of now: a real run gets what's left when it runs, and waits if "
         "reservations are closed.",
     ]
+    _email_log(report, notifier)
     return report

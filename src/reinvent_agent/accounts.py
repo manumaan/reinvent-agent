@@ -10,6 +10,7 @@ other: the Lambda and the app always hold the same, current refresh token.
 from __future__ import annotations
 
 import json
+from functools import cache
 
 from reinvent_agent.config import Settings, load_preferences, save_preferences, settings
 from reinvent_agent.events_api.auth import (
@@ -27,19 +28,30 @@ def unattended_enabled() -> bool:
     return bool(load_preferences().get("unattended"))
 
 
-def _table(cfg: Settings):
+@cache
+def _client(service: str, region: str):
+    """One client per service: a new one means a new TLS connection on every page run."""
     import boto3
 
-    return boto3.resource("dynamodb", region_name=cfg.region).Table(cfg.plans_table)
+    return boto3.client(service, region_name=region)
+
+
+@cache
+def _dynamodb(region: str):
+    import boto3
+
+    return boto3.resource("dynamodb", region_name=region)
+
+
+def _table(cfg: Settings):
+    return _dynamodb(cfg.region).Table(cfg.plans_table)
 
 
 def token_store(cfg: Settings | None = None) -> TokenStore:
     cfg = cfg or settings()
     local = FileTokenStore()
     if unattended_enabled() and cfg.token_secret_arn:
-        import boto3
-
-        client = boto3.client("secretsmanager", region_name=cfg.region)
+        client = _client("secretsmanager", cfg.region)
         return SyncedTokenStore(SecretsManagerTokenStore(cfg.token_secret_arn, client), local)
     return local
 
@@ -108,9 +120,7 @@ def disable_unattended(cfg: Settings | None = None) -> None:
 
 
 def _sns(cfg: Settings):
-    import boto3
-
-    return boto3.client("sns", region_name=cfg.region)
+    return _client("sns", cfg.region)
 
 
 def subscriptions(cfg: Settings | None = None) -> list[dict]:
@@ -122,7 +132,7 @@ def subscriptions(cfg: Settings | None = None) -> list[dict]:
         {
             "endpoint": s["Endpoint"],
             "protocol": s["Protocol"],
-            "confirmed": s["SubscriptionArn"] != "PendingConfirmation",
+            "confirmed": s["SubscriptionArn"].startswith("arn:"),  # not Pending/Deleted
         }
         for s in resp.get("Subscriptions", [])
     ]
@@ -136,23 +146,33 @@ def subscribe(email: str, cfg: Settings | None = None) -> None:
     _sns(cfg).subscribe(TopicArn=cfg.reservation_topic_arn, Protocol="email", Endpoint=email)
 
 
-def scheduler_client(cfg: Settings | None = None):
-    import boto3
+def has_confirmed_email(cfg: Settings | None = None) -> bool:
+    return any(s["confirmed"] for s in subscriptions(cfg))
+
+
+def notifier(cfg: Settings | None = None):
+    """Sends to the subscribed email(s); None when nobody would get it."""
+    from reinvent_agent.reservation_runner import SnsNotifier
 
     cfg = cfg or settings()
-    return boto3.client("scheduler", region_name=cfg.region)
+    if not has_confirmed_email(cfg):
+        return None
+    return SnsNotifier(cfg.reservation_topic_arn, _sns(cfg))
+
+
+def scheduler_client(cfg: Settings | None = None):
+    cfg = cfg or settings()
+    return _client("scheduler", cfg.region)
 
 
 def invoke_cloud(
     action: str, label: str, cfg: Settings | None = None, wait_seconds: int = 0, **extra
 ) -> dict:
     """Run the deployed Lambda now (e.g. a preflight to test sign-in + email)."""
-    import boto3
-
     cfg = cfg or settings()
     if not cfg.reservation_function:
         raise RuntimeError("Deploy ReinventAgentReservations first.")
-    resp = boto3.client("lambda", region_name=cfg.region).invoke(
+    resp = _client("lambda", cfg.region).invoke(
         FunctionName=cfg.reservation_function,
         Payload=json.dumps(
             {"action": action, "label": label, "wait_seconds": wait_seconds, **extra}

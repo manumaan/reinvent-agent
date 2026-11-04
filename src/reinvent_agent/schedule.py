@@ -342,15 +342,17 @@ class MySchedule:
             "room": s.room,
         }
 
-    def timeline(self, sched: Schedule, tz: str = EVENT_TZ) -> dict[str, list[dict]]:
-        """The real schedule, day by day: reserved and favorited sessions plus personal
-        time, in start order, with overlapping entries flagged. Undated items go under
-        ``"unscheduled"``."""
+    def timeline(
+        self, sched: Schedule, tz: str = EVENT_TZ, reserved_only: bool = False
+    ) -> dict[str, list[dict]]:
+        """The real schedule, day by day: reserved and favorited sessions (or only the
+        reserved ones) plus personal time, in start order, with overlapping entries
+        flagged. Undated items go under ``"unscheduled"``."""
         from datetime import UTC
         from zoneinfo import ZoneInfo
 
         entries: dict[str, dict] = {}
-        for sid in dict.fromkeys(sched.reserved + sched.favorites):
+        for sid in dict.fromkeys(sched.reserved + ([] if reserved_only else sched.favorites)):
             d = self.describe(sid)
             entries[sid] = d | {
                 "favorite": sid in sched.favorites,

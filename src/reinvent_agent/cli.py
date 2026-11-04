@@ -593,7 +593,8 @@ def reserve_dry_run(
     pretend_full: list[str] = typer.Option([], help="Session code to treat as full (repeatable)"),
     cloud: bool = typer.Option(False, help="Run it in the deployed Lambda (tests that path)"),
 ):
-    """Show what a run would do, step by step: reserves nothing, sends no email."""
+    """Show what a run would do, step by step, and email the log. Reserves nothing."""
+    from reinvent_agent.accounts import has_confirmed_email, notifier
     from reinvent_agent.reservation_runner import RunReport, dry_run
 
     store = _plan_store()
@@ -602,13 +603,16 @@ def reserve_dry_run(
     if cloud:
         from reinvent_agent.accounts import invoke_cloud
 
-        result = invoke_cloud("dry_run", "dry run", pretend_full=full)
+        result = invoke_cloud(
+            "dry_run", "dry run", pretend_full=full, email=has_confirmed_email()
+        )
         if "report" not in result:
             typer.echo(result.get("message", result))
             raise typer.Exit(1)
         report = RunReport(**result["report"])
     else:
-        report = dry_run(_client(), DEFAULT_EVENT, plan, full)
+        report = dry_run(_client(), DEFAULT_EVENT, plan, full, notifier())
+        store.save_run(report.to_dict())
     typer.echo(report.text())
     typer.echo("\nLog:\n" + report.log_text())
 

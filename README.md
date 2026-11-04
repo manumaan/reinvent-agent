@@ -61,7 +61,7 @@ uv run reinvent-agent reserve schedule "2026-11-10 09:00" --tz America/Los_Angel
 uv run reinvent-agent reserve status              # plan, scheduled runs, recent runs
 uv run reinvent-agent reserve unschedule 20261110T1700
 uv run reinvent-agent reserve preflight --cloud   # test sign-in + email now
-uv run reinvent-agent reserve dry-run             # step-by-step log; reserves nothing, no email
+uv run reinvent-agent reserve dry-run             # step-by-step log, also emailed; reserves nothing
 ```
 
 The app and CLI read the bucket, table and secret names from the deployed stacks' outputs, so there is nothing to configure. Environment variables (`REINVENT_VECTOR_BUCKET`, `REINVENT_SESSIONS_TABLE`, `REINVENT_MODEL`, `REINVENT_LLM_PROVIDER`, `ANTHROPIC_API_KEY`, …; see `src/reinvent_agent/config.py`) override them. `uv run reinvent-agent config show` prints what is in effect (never the key).

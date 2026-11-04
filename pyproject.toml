@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["streamlit>=1.40"]
+ui = ["streamlit>=1.64"]
 
 [project.scripts]
 reinvent-agent = "reinvent_agent.cli:app"

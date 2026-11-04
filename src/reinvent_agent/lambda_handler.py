@@ -9,7 +9,7 @@ EventBridge Scheduler invokes it (see ``run_schedule``) with
   the report and marks itself done. Problems are emailed at most once an hour.
 * ``run`` -- reserve now (manual, or to test the cloud path): one probe, no waiting
   unless ``wait_seconds`` is given; always emails the report.
-* ``dry_run`` -- the run's steps with nothing reserved and no email; returns the report.
+* ``dry_run`` -- the run's steps with nothing reserved; emails the full log and returns it.
  Environment: TOKEN_SECRET_ARN, PLANS_TABLE, TOPIC_ARN,
 EVENT_ID. Only the Events API client and the reservation modules are imported here, so
 the deployment package stays small (httpx, pydantic, tzdata; boto3 is in the runtime).
@@ -101,7 +101,11 @@ def _handle(action, label, event, context, runner, store, stored):
         from reinvent_agent.reservation_runner import dry_run
 
         plan = store.approved() or store.draft()
-        report = dry_run(runner.client, runner.event_id, plan, event.get("pretend_full", ()))
+        notifier = runner.notifier if event.get("email", True) else None
+        report = dry_run(
+            runner.client, runner.event_id, plan, event.get("pretend_full", ()), notifier, label
+        )
+        store.save_run(report.to_dict())
         return {"ok": report.status == "done", "status": report.status, "report": report.to_dict()}
 
     if action not in ("poll", "run"):
@@ -118,8 +122,9 @@ def _handle(action, label, event, context, runner, store, stored):
     lease = dynamo_lease(store.table, name="reservation-run", ttl=900, wait=0)
     try:
         with lease():
-            report = runner.run(store.approved(), label, deadline, quiet=quiet)
-            if report.status != "closed":
+            on_start = store.save_run if action == "run" else None  # poll: silent while closed
+            report = runner.run(store.approved(), label, deadline, quiet=quiet, on_start=on_start)
+            if action == "run" or report.status != "closed":
                 store.save_run(report.to_dict())
     except LeaseBusy:
         if action == "run":
