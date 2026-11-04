@@ -99,6 +99,7 @@ def test_reservation_stack_schedules_lambda_and_topic():
         },
     )
     t.resource_count_is("AWS::SNS::Topic", 1)
+    t.has_resource_properties("AWS::SNS::Topic", {"DisplayName": "My re:Invent reservations agent"})
     # No fixed dates: the app creates one-time schedules from the time the user picks.
     t.resource_count_is("AWS::Scheduler::Schedule", 0)
     outputs = t.find_outputs("*")

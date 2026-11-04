@@ -89,7 +89,12 @@ def list_runs(client) -> list[ScheduledRun]:
     for name in names:
         if not name.endswith("-run"):
             continue
-        detail = client.get_schedule(Name=name)
+        try:
+            detail = client.get_schedule(Name=name)
+        except Exception as e:  # it fired and deleted itself since the listing above
+            if "ResourceNotFound" in type(e).__name__:
+                continue
+            raise
         at = re.fullmatch(r"at\((.+)\)", detail["ScheduleExpression"]).group(1)
         when = datetime.fromisoformat(at).replace(
             tzinfo=ZoneInfo(detail.get("ScheduleExpressionTimezone") or "UTC")

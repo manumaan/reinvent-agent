@@ -65,7 +65,10 @@ class ReservationStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         self.topic = sns.Topic(
-            self, "ReservationNotices", display_name="re:Invent reservations", enforce_ssl=True
+            self,
+            "ReservationNotices",
+            display_name="My re:Invent reservations agent",  # the sender name on emails
+            enforce_ssl=True,
         )
 
         self.function = lambda_.Function(

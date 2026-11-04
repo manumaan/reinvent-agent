@@ -74,3 +74,28 @@ def test_a_failed_check_leaves_nothing_behind():
     with pytest.raises(RuntimeError):
         schedule_run(NOW + timedelta(days=1), IST, "f", "r", client, now=NOW)
     assert client.items == {}
+
+
+def test_list_skips_a_run_that_fired_while_listing():
+    """AWS deletes a run as it fires, which can fall between the list and the details."""
+    from datetime import UTC, datetime, timedelta
+
+    from reinvent_agent.run_schedule import list_runs, schedule_run
+
+    class Firing(FakeScheduler):
+        def get_schedule(self, Name):  # noqa: N803
+            raise type("ResourceNotFoundException", (Exception,), {})()
+
+    client = Firing()
+    now = datetime(2026, 11, 4, tzinfo=UTC)
+    schedule_run(now + timedelta(minutes=5), "UTC", "arn:fn", "arn:role", client, now=now)
+    assert list_runs(client) == []
+
+    class Broken(FakeScheduler):
+        def get_schedule(self, Name):  # noqa: N803
+            raise RuntimeError("throttled")
+
+    client = Broken()
+    schedule_run(now + timedelta(minutes=5), "UTC", "arn:fn", "arn:role", client, now=now)
+    with pytest.raises(RuntimeError):  # anything else is still an error
+        list_runs(client)

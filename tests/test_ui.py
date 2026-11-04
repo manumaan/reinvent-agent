@@ -120,6 +120,19 @@ def test_schedule_and_cancel_a_run_from_the_plans_tab(monkeypatch, tmp_path):
         assert any("Scheduled the run for" in s.value for s in at.success)
         assert any("starts in" in m.value for m in at.markdown)
         assert not any("Not scheduled yet" in c.value for c in at.caption)  # it is scheduled
+        assert at.time_input(key="run_time").value is None  # the box is ready for another run
+        assert not any("add another run" in c.value for c in at.caption)
+
+        # Clicking with the box empty asks for a time and schedules nothing more.
+        count = len(scheduler.items)
+        next(b for b in at.button if b.label == "⏰ Schedule run").click()
+        at = at.run()
+        assert any("choose a time first" in w.value for w in at.warning)
+        assert len(scheduler.items) == count
+
+        # Reloading the page with a run scheduled: the box starts empty too.
+        fresh = AppTest.from_file(str(app_file), default_timeout=30).run()
+        assert not fresh.exception and fresh.time_input(key="run_time").value is None
 
         # A different time in the box while that run is scheduled: "another", not "not yet".
         at.time_input(key="run_time").set_value(time_of_day(9, 30))
@@ -133,7 +146,7 @@ def test_schedule_and_cancel_a_run_from_the_plans_tab(monkeypatch, tmp_path):
         assert not any("Scheduled the run for" in s.value for s in at.success)  # replaced
         at = at.run()  # still there after the status refreshes itself
         assert any("Cancelled the scheduled run for" in s.value for s in at.success)
-        assert any("Not scheduled yet" in c.value for c in at.caption)  # cancelled: back again
+        assert any("No runs scheduled" in c.value for c in at.caption)
     finally:
         config.settings.cache_clear()
         st.cache_data.clear()
@@ -220,7 +233,8 @@ def _plans_with_a_run(monkeypatch, tmp_path, subs=()):
     monkeypatch.setattr(accounts, "events_client", lambda cfg=None: Api())
     monkeypatch.setattr(accounts, "unattended_enabled", lambda: True)
     monkeypatch.setattr(accounts, "subscriptions", lambda cfg=None: list(subs))
-    monkeypatch.setattr(accounts, "scheduler_client", lambda cfg=None: FakeScheduler())
+    scheduler = FakeScheduler()
+    monkeypatch.setattr(accounts, "scheduler_client", lambda cfg=None: scheduler)
     app_file = Path(__file__).resolve().parent.parent / "ui" / "app.py"
     return AppTest.from_file(str(app_file), default_timeout=30), pstore
 
@@ -323,9 +337,162 @@ def test_history_shows_a_real_run_while_it_runs_and_after(monkeypatch, tmp_path)
         reserved = [{"code": "A", "title": "T", "how": "reserved"}]
         finished = {"status": "done", "finished_at": time.time(), "reserved": reserved}
         pstore.save_run(started | finished)
+        at.session_state["run_status"] = None  # read now, not in the background
         at = at.run()
         assert any("REAL RUN" in m.value and "done: 1 reserved" in m.value for m in at.markdown)
         assert any("finished at" in s.value for s in at.success)
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+
+def test_status_never_goes_blank_as_a_run_starts(monkeypatch, tmp_path):
+    import time
+
+    import streamlit as st
+
+    at, pstore = _plans_with_a_run(monkeypatch, tmp_path)
+    due = time.time() - 3
+
+    def texts(at):
+        return [m.value for m in at.markdown] + [i.value for i in at.info]
+
+    at.session_state["expected_runs"] = {"S": due}  # AWS deleted the schedule as it fired
+    at = at.run()
+    try:
+        assert not at.exception
+        assert any("Starting" in x for x in texts(at))
+        assert not any("No runs scheduled" in c.value for c in at.caption)
+
+        run = {
+            "label": "scheduled run",
+            "started_at": due + 2,
+            "status": "running",
+            "finished_at": None,
+            "reserved": [],
+            "failed": [],
+            "notes": [],
+            "log": [],
+        }
+        pstore.save_run(run)
+        at.session_state["run_status"] = None  # read now, not in the background
+        at = at.run()
+        assert any("Running now" in x for x in texts(at))
+        assert not any("Starting" in x for x in texts(at))
+        assert at.session_state["expected_runs"] == {}
+
+        pstore.save_run(run | {"status": "done", "finished_at": time.time()})
+        at.session_state["run_status"] = None  # read now, not in the background
+        at = at.run()
+        assert any("finished at" in s.value for s in at.success)
+        assert not any("Running now" in x for x in texts(at))
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+
+def test_failed_status_reads_keep_the_last_status_until_they_last(monkeypatch, tmp_path):
+    import time
+
+    import streamlit as st
+
+    from reinvent_agent import accounts
+
+    at, _ = _plans_with_a_run(monkeypatch, tmp_path)
+    at = at.run()
+
+    class Down:
+        def list_schedules(self, **kw):
+            raise RuntimeError("throttled")
+
+    monkeypatch.setattr(accounts, "scheduler_client", lambda cfg=None: Down())
+    try:
+        box = at.session_state["run_status"]
+        box["at"] = 0  # due for a read
+        at = at.run()
+        deadline = time.time() + 5
+        while box["fetching"] and time.time() < deadline:
+            time.sleep(0.02)
+        assert box["error"] == "throttled"
+        at = at.run()
+        assert not at.exception  # one failure: no alarm
+        assert not any("Couldn't read scheduled runs" in e.value for e in at.error)
+        assert any("No runs scheduled" in c.value for c in at.caption)
+
+        box["failing_since"] = time.time() - 60  # still failing a minute later
+        at = at.run()
+        assert any("Couldn't read scheduled runs" in e.value for e in at.error)
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+
+def test_a_run_that_never_reports_in_says_so(monkeypatch, tmp_path):
+    import time
+
+    import streamlit as st
+
+    at, _ = _plans_with_a_run(monkeypatch, tmp_path)
+    at.session_state["expected_runs"] = {"S": time.time() - 600}
+    at = at.run()
+    try:
+        assert not at.exception
+        assert at.session_state["expected_runs"] == {}
+        assert at.session_state["schedule_message"][0] == "warning"
+        assert "didn't report in" in at.session_state["schedule_message"][1]
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()
+
+
+def test_last_result_goes_away_once_a_new_run_is_scheduled(monkeypatch, tmp_path):
+    import time
+    from datetime import date, timedelta
+    from datetime import time as time_of_day
+
+    import streamlit as st
+
+    at, pstore = _plans_with_a_run(monkeypatch, tmp_path)
+    now = time.time()
+    finished = {
+        "label": "scheduled run",
+        "started_at": now - 10,
+        "status": "done",
+        "finished_at": now - 5,
+        "reserved": [],
+        "failed": [],
+        "notes": [],
+        "log": [],
+    }
+    pstore.save_run(finished)
+
+    def shows_result(at):
+        return any("finished at" in s.value for s in at.success)
+
+    at = at.run()
+    try:
+        assert shows_result(at)
+        at.date_input(key="run_date").set_value(date.today() + timedelta(days=7))
+        at.time_input(key="run_time").set_value(time_of_day(8, 0))
+        next(b for b in at.button if b.label == "⏰ Schedule run").click()
+        at = at.run()
+        assert any("Scheduled the run for" in s.value for s in at.success)
+        assert not shows_result(at)
+
+        next(b for b in at.button if b.label == "✖ Cancel").click()
+        at = at.run()
+        assert not at.exception and not shows_result(at)  # cancelling doesn't bring it back
+
+        # The next run's own result does show.
+        later = time.time() + 1
+        pstore.save_run(finished | {"started_at": later - 1, "finished_at": later})
+        at.session_state["run_status"] = None  # read now, not in the background
+        at = at.run()
+        assert shows_result(at)
     finally:
         config.settings.cache_clear()
         st.cache_data.clear()

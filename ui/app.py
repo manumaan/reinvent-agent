@@ -999,8 +999,9 @@ def session_actions(picked: list[dict], favorites: set[str], reserved: set[str])
                 getattr(st, kind)(text)
         if not ids:
             st.markdown(
-                f"☑️ **Tick sessions in the table below**, then {FAV_ICON} favorite or "
-                f"{RES_ICON} reserve them here.  \n{FAV_ICON} favorite · {RES_ICON} reserved · "
+                f"☑️ **Tick sessions in the table below**, then {FAV_ICON} favorite, unfavorite, "
+                f"{RES_ICON} reserve or unreserve them here.  \n"
+                f"{FAV_ICON} favorite · {RES_ICON} reserved · "
                 f"{NO_RES_ICON} no reserved seating"
             )
             return
@@ -1516,6 +1517,9 @@ def time_until(delta) -> str:
 
 
 SCHEDULE_MESSAGE_SECONDS = 60
+READ_ERRORS_SHOW_AFTER = 30  # seconds: a one-off failed read isn't worth an alarm
+EXPECT_SOON = 20  # seconds before a run's start to begin checking on every tick
+EXPECT_WITHIN = 180  # seconds to wait for a run to report in after its start time
 RUN_LASTS_AT_MOST = 960  # a Lambda lives 15 minutes; past that, "running" means it died
 
 
@@ -1527,6 +1531,43 @@ def clock_time(epoch: float) -> str:
     return time.strftime("%b %d, %-I:%M:%S %p", time.localtime(epoch))
 
 
+def schedule_clicked(tz: str) -> None:
+    """A button callback: it runs before the page is redrawn, so it can clear the time box."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from reinvent_agent.run_schedule import MIN_LEAD, schedule_run
+
+    at = st.session_state["run_time"]
+    if at is None:
+        return schedule_message("warning", "Not scheduled: choose a time first.")
+    now = datetime.now(ZoneInfo(tz))
+    when = datetime.combine(st.session_state["run_date"], at, tzinfo=ZoneInfo(tz))
+    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
+    try:
+        if when < now + MIN_LEAD:
+            return schedule_message(
+                "warning",
+                f"Not scheduled: {chosen} is too soon or already past. "
+                f"It's {now:%-I:%M %p} now; choose a time at least 2 minutes ahead.",
+            )
+        schedule_run(
+            when, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn,
+            accounts.scheduler_client(cfg),
+        )  # fmt: skip
+        st.session_state["run_time"] = None  # ready for the next run, if any
+        st.session_state["last_scheduled_at"] = time.time()
+        st.session_state.pop("run_status", None)
+        schedule_message("success", f"Scheduled the run for {chosen}.")
+    except ValueError as e:
+        schedule_message("warning", f"Couldn't schedule the run: {e}")
+    except Exception as e:
+        if "Conflict" in type(e).__name__:
+            schedule_message("warning", "Couldn't schedule the run: one is already set for then.")
+        else:
+            schedule_message("error", f"Couldn't schedule the run: {e}")
+
+
 @st.fragment
 def scheduled_runs(approved, pstore) -> None:
     """Pick a date and time for the automated run. A fragment: using these controls
@@ -1534,7 +1575,7 @@ def scheduled_runs(approved, pstore) -> None:
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
-    from reinvent_agent.run_schedule import MIN_LEAD, schedule_run
+    from reinvent_agent.run_schedule import list_runs
 
     if not (cfg.reservation_function_arn and cfg.scheduler_role_arn):
         return st.warning(
@@ -1547,44 +1588,25 @@ def scheduled_runs(approved, pstore) -> None:
     # Start ten minutes ahead, and don't keep yesterday's date in a tab left open overnight.
     if st.session_state.get("run_date", now.date() - timedelta(days=1)) < now.date():
         st.session_state["run_date"] = soon.date()
-    st.session_state.setdefault("run_time", soon.time().replace(second=0, microsecond=0))
+    if "run_time" not in st.session_state:  # empty when a run is already scheduled
+        try:
+            scheduled = bool(list_runs(accounts.scheduler_client(cfg)))
+        except Exception:
+            scheduled = False
+        st.session_state["run_time"] = (
+            None if scheduled else soon.time().replace(second=0, microsecond=0)
+        )
     c1, c2, c3 = st.columns([2, 2, 2])
-    day = c1.date_input("Date", min_value=now.date(), key="run_date")
-    at = c2.time_input(f"Time, AM/PM ({tz})", step=60, format="12h", key="run_time")
-    when = datetime.combine(day, at, tzinfo=ZoneInfo(tz))
-    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
+    c1.date_input("Date", min_value=now.date(), key="run_date")
+    c2.time_input(f"Time, AM/PM ({tz})", step=60, format="12h", key="run_time")
     missing = []
     if approved is None:
         missing.append("approve a plan")
     if not accounts.unattended_enabled():
         missing.append("enable the unattended run")
     c3.markdown("&nbsp;")
-    clicked = c3.button("⏰ Schedule run", type="primary", use_container_width=True,
-                        disabled=bool(missing))  # fmt: skip
-    if clicked:
-        try:
-            if when < now + MIN_LEAD:
-                schedule_message(
-                    "warning",
-                    f"Not scheduled: {chosen} is too soon or already past. "
-                    f"It's {now:%-I:%M %p} now; choose a time at least 2 minutes ahead.",
-                )
-            else:
-                schedule_run(
-                    when, tz, cfg.reservation_function_arn, cfg.scheduler_role_arn,
-                    accounts.scheduler_client(cfg),
-                )  # fmt: skip
-                st.session_state["last_scheduled"] = when
-                schedule_message("success", f"Scheduled the run for {chosen}.")
-        except ValueError as e:
-            schedule_message("warning", f"Couldn't schedule the run: {e}")
-        except Exception as e:
-            if "Conflict" in type(e).__name__:
-                schedule_message(
-                    "warning", "Couldn't schedule the run: one is already set for then."
-                )
-            else:
-                schedule_message("error", f"Couldn't schedule the run: {e}")
+    c3.button("⏰ Schedule run", type="primary", use_container_width=True,
+              disabled=bool(missing), on_click=schedule_clicked, args=(tz,))  # fmt: skip
     if missing:
         st.caption("To schedule a run: " + " and ".join(missing) + ".")
     live_run_status(pstore, tz)
@@ -1606,62 +1628,145 @@ def cancel_scheduled_run(stamp: str, name: str) -> None:
 
     try:
         cancel_run(stamp, accounts.scheduler_client(cfg))
+        st.session_state.get("expected_runs", {}).pop(stamp, None)
+        st.session_state.pop("run_status", None)
         schedule_message("success", f"Cancelled the scheduled run for {name}.")
     except Exception as e:
         schedule_message("error", f"Couldn't cancel the run for {name}: {e}")
 
 
-@st.fragment(run_every=10)
+def fetch_run_status(box: dict, pstore) -> None:
+    """Runs in a background thread once the status is on screen: it can't use Streamlit."""
+    from reinvent_agent.run_schedule import list_runs
+
+    try:
+        runs = list_runs(accounts.scheduler_client(cfg))
+        history = pstore.runs(10)
+        box.update(at=time.time(), runs=runs, history=history, error=None, failing_since=None)
+    except Exception as e:  # keep showing what we last knew; it usually passes
+        box.update(at=time.time(), error=str(e))
+        box["failing_since"] = box.get("failing_since") or time.time()
+    finally:
+        box["fetching"] = False
+
+
+def run_status_data(pstore) -> dict:
+    """What AWS says about runs: read every 10 seconds, but about once a second near a run's
+    start and during a run, because a run can be over in about 5 seconds.
+
+    Reads happen in the background: the status redraws every second, and a read can take
+    longer than that, which would otherwise interrupt each redraw before it finished.
+    """
+    state = st.session_state
+    expected = state.setdefault("expected_runs", {})  # run id -> epoch it's due to start
+    box = state.get("run_status")
+    now = time.time()
+    if not box:
+        box = {"fetching": False}
+        fetch_run_status(box, pstore)
+        if "runs" not in box:
+            raise RuntimeError(box["error"])
+        state["run_status"] = box
+    else:
+        near = any(due - now < EXPECT_SOON for due in expected.values())
+        busy = near or any(run_is_live(r) for r in box["history"])
+        if not box["fetching"] and now - box["at"] >= (1 if busy else 10):
+            box["fetching"] = True
+            threading.Thread(target=fetch_run_status, args=(box, pstore), daemon=True).start()
+    if box.get("reconciled") != box["at"]:
+        box["reconciled"] = box["at"]
+        listed = {r.stamp for r in box["runs"]}
+        for stamp, due in list(expected.items()):
+            if due > now and stamp not in listed:
+                del expected[stamp]  # cancelled somewhere else
+        expected.update({r.stamp: r.when.timestamp() for r in box["runs"]})
+    return box
+
+
+def starting_runs(history: list[dict], tz: str) -> dict[str, str]:
+    """Runs past their start time that haven't reported in yet: AWS has often deleted the
+    schedule by then, so without this nothing at all would show until the run began."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    expected = st.session_state.get("expected_runs", {})
+    now, out = time.time(), {}
+    for stamp, due in list(expected.items()):
+        if due > now:
+            continue
+        name = f"{datetime.fromtimestamp(due, ZoneInfo(tz)):%a %b %-d %Y, %-I:%M %p %Z}"
+        if any(r["started_at"] >= due - 5 and r["label"] == "scheduled run" for r in history):
+            del expected[stamp]  # it began: shown as running, then finished
+        elif now - due > EXPECT_WITHIN:
+            del expected[stamp]
+            schedule_message("warning", f"The run for {name} didn't report in. See Run history.")
+        else:
+            out[stamp] = name
+    return out
+
+
+@st.fragment(run_every=1)
 def live_run_status(pstore, tz: str) -> None:
     """The live part: the time you've picked, runs scheduled, and a run in progress."""
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from reinvent_agent.run_schedule import MIN_LEAD, list_runs
+    from reinvent_agent.run_schedule import MIN_LEAD
 
     now = datetime.now(ZoneInfo(tz))
-    when = datetime.combine(
-        st.session_state["run_date"], st.session_state["run_time"], tzinfo=ZoneInfo(tz)
-    )
     if message := st.session_state.get("schedule_message"):
         kind, text, at = message
-        if time.time() - at < SCHEDULE_MESSAGE_SECONDS:  # outlives the 10-second refresh
+        if time.time() - at < SCHEDULE_MESSAGE_SECONDS:  # outlives this fragment's refresh
             getattr(st, kind)(text)
-    client = accounts.scheduler_client(cfg)
     try:
-        runs = list_runs(client)
-        history = pstore.runs(3)
+        data = run_status_data(pstore)
     except Exception as e:
         return st.error(f"Couldn't read scheduled runs: {e}")
-    chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
-    if any(r.when == when for r in runs):
-        pass  # already scheduled: listed below
-    elif when >= now + MIN_LEAD:
-        lead = (
-            "➕ **Schedule run** would add another run on"
-            if runs
-            else ("🕓 :red[**Not scheduled yet.**] **Schedule run** would run it on")
-        )
-        st.caption(f"{lead} **{chosen}**, {time_until(when - now)} from now.")
-    elif when != st.session_state.get("last_scheduled"):  # else: that run has fired
-        st.warning(
-            f"The time you've picked, {chosen}, is too soon or already past. It's "
-            f"{now:%-I:%M %p} now: choose a time at least 2 minutes ahead."
-        )
+    runs, history = data["runs"], data["history"]
+    if data.get("error") and time.time() - data["failing_since"] > READ_ERRORS_SHOW_AFTER:
+        st.error(f"Couldn't read scheduled runs, still trying: {data['error']}")
+    if picked := st.session_state.get("run_time"):  # empty once a run is scheduled
+        when = datetime.combine(st.session_state["run_date"], picked, tzinfo=ZoneInfo(tz))
+        chosen = f"{when:%a %b %-d %Y, %-I:%M %p %Z}"
+        if any(r.when == when for r in runs):
+            pass  # already scheduled: listed below
+        elif when < now + MIN_LEAD:
+            st.warning(
+                f"The time you've picked, {chosen}, is too soon or already past. It's "
+                f"{now:%-I:%M %p} now: choose a time at least 2 minutes ahead."
+            )
+        else:
+            lead = (
+                "➕ **Schedule run** would add another run on"
+                if runs
+                else ("🕓 :red[**Not scheduled yet.**] **Schedule run** would run it on")
+            )
+            st.caption(f"{lead} **{chosen}**, {time_until(when - now)} from now.")
     recent = [r for r in history if not r.get("dry_run")]
     live = next((r for r in recent if run_is_live(r)), None)
+    starting = starting_runs(recent, tz)
     if live:
         st.info(
             f"▶️ **Running now**: the {live['label']} started at "
             f"{clock_time(live['started_at'])}. Results will appear in Run history."
         )
-    elif recent and time.time() - (recent[0].get("finished_at") or 0) < 300:
+    elif (
+        recent
+        and not runs  # a newer run is scheduled: the last result is old news
+        and not starting
+        and time.time() - (finished := recent[0].get("finished_at") or 0) < 300
+        and finished > st.session_state.get("last_scheduled_at", 0)  # still so if cancelled
+    ):
         r = recent[0]
         st.success(
             f"✅ The {r['label']} finished at {clock_time(r['finished_at'])}: {r['status']}, "
             f"{len(r['reserved'])} reserved, {len(r['failed'])} not. Details in Run history."
         )
-    if not runs:
+    listed = {r.stamp for r in runs}
+    for stamp, name in starting.items():
+        if stamp not in listed:  # it has fired, so there's nothing left to cancel
+            st.markdown(f"⏳ **Starting** the run for **{name}** (AWS can take up to a minute)")
+    if not runs and not starting and not live:
         return st.caption("No runs scheduled.")
     for r in runs:
         local = r.when.astimezone(ZoneInfo(tz))
@@ -1679,7 +1784,7 @@ def live_run_status(pstore, tz: str) -> None:
                   on_click=cancel_scheduled_run, args=(r.stamp, name))  # fmt: skip
 
 
-@st.fragment(run_every=10)
+@st.fragment(run_every=5)
 def run_history(pstore) -> None:
     """Every run, real or dry, newest first; a run shows up the moment it starts."""
     try:
