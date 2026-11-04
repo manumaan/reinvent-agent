@@ -118,7 +118,7 @@ def test_schedule_and_cancel_a_run_from_the_plans_tab(monkeypatch, tmp_path):
         assert not at.exception
         assert any(n.startswith(PREFIX) and n.endswith("-run") for n in scheduler.items)
         assert any("Scheduled the run for" in s.value for s in at.success)
-        assert any("starts in" in m.value for m in at.markdown)
+        assert any("starts in" in m.value and "data-until" in m.value for m in at.markdown)
         assert not any("Not scheduled yet" in c.value for c in at.caption)  # it is scheduled
         assert at.time_input(key="run_time").value is None  # the box is ready for another run
         assert not any("add another run" in c.value for c in at.caption)
@@ -384,6 +384,11 @@ def test_status_never_goes_blank_as_a_run_starts(monkeypatch, tmp_path):
 
         pstore.save_run(run | {"status": "done", "finished_at": time.time()})
         at.session_state["run_status"] = None  # read now, not in the background
+        at = at.run()  # over already, but it stays up long enough to read
+        assert any("Running now" in x for x in texts(at))
+        assert not any("finished at" in s.value for s in at.success)
+
+        at.session_state["run_began"]["seen"] -= 10
         at = at.run()
         assert any("finished at" in s.value for s in at.success)
         assert not any("Running now" in x for x in texts(at))

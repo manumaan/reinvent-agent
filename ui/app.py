@@ -1521,6 +1521,31 @@ READ_ERRORS_SHOW_AFTER = 30  # seconds: a one-off failed read isn't worth an ala
 EXPECT_SOON = 20  # seconds before a run's start to begin checking on every tick
 EXPECT_WITHIN = 180  # seconds to wait for a run to report in after its start time
 RUN_LASTS_AT_MOST = 960  # a Lambda lives 15 minutes; past that, "running" means it died
+RUNNING_SHOWN_AT_LEAST = 3  # seconds: a run can be over in under 2, too fast to read or to catch
+
+# The countdown runs in the browser, so it ticks every second however busy the server is.
+COUNTDOWN_SCRIPT = """<script>
+(() => {
+  if (window.runCountdown) return;
+  window.runCountdown = true;
+  const text = (s) => {  // the same format as time_until
+    if (s < 600) {
+      const m = Math.floor(s / 60);
+      return m ? `${m} min ${s % 60} s` : `${s} s`;
+    }
+    let min = Math.round(s / 60);
+    if (min < 60) return `${min} min`;
+    const h = Math.floor(min / 60);
+    return h < 48 ? `${h} h ${min % 60} min` : `${Math.floor(h / 24)} days`;
+  };
+  setInterval(() => {
+    for (const el of document.querySelectorAll("span[data-until]")) {
+      const t = text(Math.max(0, Math.round(el.dataset.until - Date.now() / 1000)));
+      if (el.textContent !== t) el.textContent = t;
+    }
+  }, 100);
+})();
+</script>"""
 
 
 def run_is_live(run: dict) -> bool:
@@ -1609,6 +1634,7 @@ def scheduled_runs(approved, pstore) -> None:
               disabled=bool(missing), on_click=schedule_clicked, args=(tz,))  # fmt: skip
     if missing:
         st.caption("To schedule a run: " + " and ".join(missing) + ".")
+    st.html(COUNTDOWN_SCRIPT, unsafe_allow_javascript=True)
     live_run_status(pstore, tz)
     st.caption(
         "A run really reserves sessions: it uses whichever plan is approved at that moment. "
@@ -1695,14 +1721,27 @@ def starting_runs(history: list[dict], tz: str) -> dict[str, str]:
         if due > now:
             continue
         name = f"{datetime.fromtimestamp(due, ZoneInfo(tz)):%a %b %-d %Y, %-I:%M %p %Z}"
-        if any(r["started_at"] >= due - 5 and r["label"] == "scheduled run" for r in history):
+        began = [r for r in history if r["started_at"] >= due - 5 and r["label"] == "scheduled run"]
+        if began:
             del expected[stamp]  # it began: shown as running, then finished
+            st.session_state["run_began"] = {"at": began[-1]["started_at"], "seen": now}
         elif now - due > EXPECT_WITHIN:
             del expected[stamp]
             schedule_message("warning", f"The run for {name} didn't report in. See Run history.")
         else:
             out[stamp] = name
     return out
+
+
+def running_run(history: list[dict]) -> dict | None:
+    """The run to show as running: one in progress, or one this page was waiting for that
+    has only just begun, even if it's already over, so that the step is never skipped."""
+    if live := next((r for r in history if run_is_live(r)), None):
+        return live
+    began = st.session_state.get("run_began")
+    if began and time.time() - began["seen"] < RUNNING_SHOWN_AT_LEAST:
+        return next((r for r in history if r["started_at"] == began["at"]), None)
+    return None
 
 
 @st.fragment(run_every=1)
@@ -1743,8 +1782,8 @@ def live_run_status(pstore, tz: str) -> None:
             )
             st.caption(f"{lead} **{chosen}**, {time_until(when - now)} from now.")
     recent = [r for r in history if not r.get("dry_run")]
-    live = next((r for r in recent if run_is_live(r)), None)
     starting = starting_runs(recent, tz)
+    live = running_run(recent)
     if live:
         st.info(
             f"▶️ **Running now**: the {live['label']} started at "
@@ -1777,7 +1816,13 @@ def live_run_status(pstore, tz: str) -> None:
         name = f"{local:%a %b %-d %Y, %-I:%M %p %Z}"
         if left.total_seconds() > 0:
             check = " · sign-in check 30 min before" if r.has_check else ""
-            c1.markdown(f"🗓️ Scheduled for **{name}** · starts in {time_until(left)}{check}")
+            # Text that stays the same between refreshes, or they'd overwrite the countdown.
+            shown = st.session_state.setdefault("countdown_text", {})
+            start = shown.setdefault(r.stamp, time_until(left))
+            until = f'<span data-until="{r.when.timestamp():.0f}">{start}</span>'
+            c1.markdown(
+                f"🗓️ Scheduled for **{name}** · starts in {until}{check}", unsafe_allow_html=True
+            )
         else:
             c1.markdown(f"⏳ Scheduled for **{name}** · starting now (AWS can take up to a minute)")
         c2.button("✖ Cancel", key=f"cancel_run_{r.stamp}", use_container_width=True,
