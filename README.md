@@ -75,6 +75,58 @@ uv run reinvent-agent config set-provider anthropic      # with a key from `conf
 
 **Catalog changes:** while the app is open and you're signed in, it compares your catalog with the Events API every 6 hours, and on opening if a check is overdue (`REINVENT_CATALOG_CHECK_HOURS` changes the interval; 0 turns it off). The sidebar says how many sessions changed until you download the catalog again. Seat availability is ignored.
 
+## Command line
+
+The `reinvent-agent` CLI shares its code and AWS resources with the app, so a plan approved in one is the plan the other sees. Run it from the repo root as `uv run reinvent-agent <command>`; `--help` on any command lists its options.
+
+**Sign-in (`auth`)**
+
+| Command | What it does |
+|---|---|
+| `auth login` | Sign in with Builder ID. `--no-browser` prints the URL instead of opening it |
+| `auth status` | Show the sign-in status |
+| `auth push-secret` | Turn on unattended runs by copying your tokens to Secrets Manager |
+| `auth logout` | Revoke the refresh token and delete local tokens |
+
+**Catalog (`catalog`)**
+
+| Command | What it does |
+|---|---|
+| `catalog events` | List event IDs. `--include-past` adds past events |
+| `catalog dump` | Download the catalog with `ListSessions`, save it locally and copy it to S3. Options: `--out`, `--no-upload`, `--event` |
+| `catalog upload [file]` | Validate a local catalog file and copy it to S3 |
+| `catalog probe` | Diagnose a download: page sizes, `totalCount`, `nextToken`, overlap with favorites |
+| `catalog report` | Show field coverage and venue inference for a downloaded catalog |
+| `catalog index` | Embed with Titan and write to S3 Vectors and DynamoDB. Options: `--file`, `--no-with-table` |
+| `catalog search "<query>"` | Semantic search. Filters: `--min-level`, `--day`, `--venue`, `--type` |
+| `catalog schedule` | Show your reservations, favorites and personal time |
+
+**Reservations (`reserve`)**
+
+| Command | What it does |
+|---|---|
+| `reserve build` | Draft a plan from your favorites. `--strategy` is `max_sessions` or `one_venue` |
+| `reserve approve` | Approve the draft, which scheduled runs then use |
+| `reserve status` | Show the approved plan, unattended switch, scheduled runs and recent runs |
+| `reserve notify <email>` | Subscribe an address; confirm through the link AWS sends |
+| `reserve preflight` | Check the run can sign in as you. `--cloud` runs it in the Lambda and sends the email |
+| `reserve dry-run` | Show and email a step-by-step log, reserving nothing. Options: `--pretend-full <code>`, `--cloud` |
+| `reserve schedule "<date time>"` | Schedule a run. `--tz` sets the timezone |
+| `reserve unschedule <id>` | Cancel a scheduled run; `reserve status` lists the IDs |
+| `reserve run` | **Reserve the approved plan now, for real.** Options: `--wait-minutes` keeps trying if reservations are closed, `--cloud` runs it in the Lambda |
+
+**Questions and settings**
+
+| Command | What it does |
+|---|---|
+| `ask "<question>"` | Ask about the catalog; answers cite session codes |
+| `check-models` | Test Titan and which Claude models answer. `--provider` tests another endpoint without switching |
+| `config show` | Print the settings in effect, never the keys |
+| `config set-provider <name>` | Choose `openrouter`, `bedrock`, `anthropic` or `auto`. `--model` picks the model |
+| `config set-api-key`, `config clear-api-key` | Set or clear the direct Claude API key |
+
+Only the app can edit a plan's priorities and backups, build a plan from the short list, edit travel times, or show the catalog change notice.
+
 ## Development
 
 ```bash

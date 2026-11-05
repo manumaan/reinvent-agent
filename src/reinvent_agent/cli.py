@@ -460,7 +460,7 @@ def _my_schedule(cfg):
 
 
 reserve_app = typer.Typer(
-    no_args_is_help=True, help="Reservation plan, Oct 6 portal checklist, Oct 8 run"
+    no_args_is_help=True, help="Reservation plans and the automated run"
 )
 app.add_typer(reserve_app, name="reserve")
 
@@ -575,7 +575,7 @@ def reserve_run(
     wait_minutes: float = typer.Option(0, help="Keep polling this long if still closed"),
     cloud: bool = typer.Option(False, help="Run it in the deployed Lambda (tests that path)"),
 ):
-    """Reserve the approved plan now (manual fallback; the API opens Oct 8)."""
+    """Reserve the approved plan now, for real. Use `dry-run` to try it first."""
     import time
 
     if cloud:
