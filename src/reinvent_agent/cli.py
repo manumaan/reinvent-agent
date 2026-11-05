@@ -459,9 +459,7 @@ def _my_schedule(cfg):
     )
 
 
-reserve_app = typer.Typer(
-    no_args_is_help=True, help="Reservation plans and the automated run"
-)
+reserve_app = typer.Typer(no_args_is_help=True, help="Reservation plans and the automated run")
 app.add_typer(reserve_app, name="reserve")
 
 
