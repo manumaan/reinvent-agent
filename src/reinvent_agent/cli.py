@@ -184,6 +184,7 @@ def catalog_dump(
 ):
     """Walk ListSessions (needs `auth login`) and write one JSON session per line."""
     from reinvent_agent.catalog import source
+    from reinvent_agent.catalog.changes import mark_up_to_date
     from reinvent_agent.config import settings
 
     items, total = source.download_catalog(_client(), event_id)
@@ -194,6 +195,8 @@ def catalog_dump(
         source.update_archive(event_id, source.load_sessions(out))
     out.write_text(body)
     source.update_archive(event_id, source.load_sessions(out))
+    if out == source.local_path(event_id):  # the copy the app compares with AWS
+        mark_up_to_date(event_id)
     typer.echo(f"Wrote {len(items)} sessions to {out} (API totalCount: {total})")
     if total is not None and len(items) != total:
         typer.echo("WARNING: session count differs from totalCount; run `catalog probe`.")

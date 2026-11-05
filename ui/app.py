@@ -348,6 +348,29 @@ def current_profile():
     return st.session_state["profile"]
 
 
+@st.fragment(run_every=60)
+def catalog_changes_notice(signed_in: bool) -> None:
+    """In the sidebar: has the catalog changed on AWS since it was downloaded? Runs the
+    scheduled check too, in the background, so the page never waits for it."""
+    from reinvent_agent.catalog import changes as cc
+
+    last = cc.load_changes(cfg.event_id)
+    if signed_in and cc.check_due(last):
+        where = source.resolve(None, cfg.event_id, cfg.catalog_bucket)
+        cc.start_check(lambda: accounts.events_client(cfg), cfg.event_id, where)
+    if last is None:
+        return
+    when = clock_time(last.checked_at)
+    if last.error:
+        return st.caption(f"Couldn't check the catalog for changes at {when}. Will try again.")
+    if not last.found:
+        return st.caption(f"Catalog checked for changes at {when}: it matches AWS.")
+    st.warning(
+        f"**The session catalog has changed on AWS**: {last.summary()}. Download it again on "
+        f"the **Setup** tab. Checked at {when}."
+    )
+
+
 def profile_tab(signed_in: bool):
     from reinvent_agent.catalog import facets as fx
     from reinvent_agent.profile import EXPERIENCE, Profile, save_local
@@ -1099,6 +1122,8 @@ def index_catalog(sessions: list[Session], bar) -> None:
 
 def refresh_catalog(do_index: bool) -> None:
     """Events API -> local JSONL -> catalog bucket -> (optionally) vectors + DynamoDB."""
+    from reinvent_agent.catalog.changes import mark_up_to_date
+
     bar = st.progress(0.0, text="Downloading sessions…")
 
     def on_page(n, total):
@@ -1114,6 +1139,7 @@ def refresh_catalog(do_index: bool) -> None:
     path.write_text(body)
     source.update_archive(cfg.event_id, [Session.model_validate(x) for x in items])
     st.success(f"Downloaded {len(items)} sessions (API totalCount {total}) to `{path}`.")
+    mark_up_to_date(cfg.event_id)
     if cfg.catalog_bucket:
         st.success(f"Uploaded to `{source.upload(body, cfg.catalog_bucket, cfg.event_id)}`.")
     local_catalog.clear()
@@ -2369,6 +2395,9 @@ def test_now(approved, pstore) -> None:
 
 
 signed_in = sidebar()
+if local_catalog():
+    with st.sidebar:
+        catalog_changes_notice(signed_in)
 model_caption()
 st.title("re:Invent planner")
 tab_prof, tab_short, tab_ask, tab_search, tab_plans, tab_sched, tab_venues, tab_cat = st.tabs(

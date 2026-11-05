@@ -566,3 +566,43 @@ def test_plans_tab_no_longer_has_the_portal_checklist(monkeypatch, tmp_path):
 
     src = (Path(__file__).parent.parent / "ui" / "app.py").read_text()
     assert "portal_checklist" not in src and "reserve by hand" not in src
+
+
+def test_sidebar_says_when_the_catalog_changed_on_aws(monkeypatch, tmp_path):
+    import time
+    from pathlib import Path
+
+    import streamlit as st
+
+    from reinvent_agent.catalog import changes as cc
+    from reinvent_agent.catalog.source import local_path, to_jsonl
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(config, "stack_outputs", lambda region, client=None: {})
+    app_file = Path(__file__).parent.parent / "ui" / "app.py"
+    monkeypatch.chdir(tmp_path)
+    catalog = local_path("reinvent2026")
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(to_jsonl([{"sessionId": "a", "title": "Aurora", "abbreviation": "DAT1"}]))
+    config.settings.cache_clear()
+    st.cache_data.clear()
+    cc.save_changes(
+        "reinvent2026",
+        cc.CatalogChanges(time.time(), added=["SVS3"], changed={"DAT1": ["time", "room"]}),
+    )
+    try:
+        at = AppTest.from_file(str(app_file), default_timeout=30).run()
+        assert not at.exception
+        notice = next(w.value for w in at.sidebar.warning if "changed on AWS" in w.value)
+        assert "1 new, 1 updated" in notice
+        assert not at.expander or not any(e.label == "What changed" for e in at.expander)
+
+        cc.mark_up_to_date("reinvent2026")  # downloaded again
+        at = at.run()
+        assert not any("changed on AWS" in w.value for w in at.sidebar.warning)
+        assert any("it matches AWS" in c.value for c in at.sidebar.caption)
+    finally:
+        config.settings.cache_clear()
+        st.cache_data.clear()

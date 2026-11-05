@@ -20,6 +20,7 @@ def load(name: str) -> dict:
 def _isolated_user_config(monkeypatch, tmp_path_factory):
     """Keep tests off the developer's ~/.config/reinvent-agent (tokens, saved provider)."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path_factory.mktemp("xdg")))
+    monkeypatch.setenv("REINVENT_CATALOG_CHECK_HOURS", "0")  # no background API walks
 
 
 @pytest.fixture

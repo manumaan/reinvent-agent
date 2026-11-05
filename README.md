@@ -73,6 +73,8 @@ uv run reinvent-agent config set-provider bedrock        # optionally --model cl
 uv run reinvent-agent config set-provider anthropic      # with a key from `config set-api-key`
 ```
 
+**Catalog changes:** while the app is open and you're signed in, it compares your catalog with the Events API every 6 hours, and on opening if a check is overdue (`REINVENT_CATALOG_CHECK_HOURS` changes the interval; 0 turns it off). The sidebar says how many sessions changed until you download the catalog again. Seat availability is ignored.
+
 ## Development
 
 ```bash
