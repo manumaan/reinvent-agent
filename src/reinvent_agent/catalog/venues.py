@@ -1,7 +1,8 @@
 """Fill in missing session venues from room names.
 
-In the re:Invent 2026 catalog about 40% of sessions have no ``venue`` but do have
-a ``room`` such as ``"Level 3 | Chairman's 363 | Content Hub | Red Theater"``.
+In the re:Invent 2026 catalog some sessions (about 40% in September, about 1% in
+November) have no ``venue`` but do have a ``room`` such as
+``"Level 3 | Chairman's 363 | Content Hub | Red Theater"``.
 Room names identify buildings, so we learn room-name -> venue from the sessions
 that do carry a venue, then apply it to the rest. A room that names a venue
 outright (``"Caesars Palace | Promenade South | ..."``) wins over learned votes.
